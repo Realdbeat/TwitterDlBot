@@ -21,6 +21,17 @@ function sendResponse(int $code, array $data): void {
     exit;
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $hasToken = !empty($config['bot_token']) && $config['bot_token'] !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE';
+    sendResponse(200, [
+        'ok' => true,
+        'service' => 'Twitter Video Downloader Telegram Bot',
+        'status' => 'Webhook endpoint is active and waiting for Telegram updates.',
+        'bot_token_configured' => $hasToken,
+        'hint' => 'Telegram sends updates using HTTP POST. To register this webhook, visit: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=' . urlencode('https://' . ($_SERVER['HTTP_HOST'] ?? 'xdlbot.mossubyte.com.ng') . '/webhook.php')
+    ]);
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     sendResponse(405, ['ok' => false, 'error' => 'Method Not Allowed']);
 }

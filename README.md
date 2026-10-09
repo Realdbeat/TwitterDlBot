@@ -215,3 +215,6 @@ php bot.php
 ## 📄 License
 
 MIT License. Free to use and modify for personal or commercial projects.
+
+
+https://api.telegram.org/8625947839:AAGtptNOl3ffq8uAQ9Br_YKmSMv41cWK0SA/setWebhook?url=https://xdlbot.mossubyte.com.ng/webhook.php
