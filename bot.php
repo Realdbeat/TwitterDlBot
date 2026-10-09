@@ -118,18 +118,29 @@ try {
                 // Handle update
                 try {
                     $handler->handleUpdate($update);
+                    \TwitterDlBot\Logger::success('polling', "Handled update #{$updateId} from @{$from}");
                 } catch (\Throwable $e) {
                     logError("Error while handling update #{$updateId}: " . $e->getMessage());
+                    \TwitterDlBot\Logger::error('polling', "Error handling update #{$updateId}: " . $e->getMessage(), [
+                        'exception' => $e->getMessage(),
+                        'trace' => $e->getTraceAsString(),
+                        'update' => $update
+                    ]);
                 }
             }
         } catch (\Throwable $e) {
             logError("Polling loop exception: " . $e->getMessage());
+            \TwitterDlBot\Logger::error('system', "Polling loop error: " . $e->getMessage());
             sleep(3);
         }
     }
 
     logInfo("Bot stopped successfully.");
+    \TwitterDlBot\Logger::info('system', "Bot daemon stopped.");
 } catch (\Throwable $e) {
     logError("Fatal error: " . $e->getMessage());
+    \TwitterDlBot\Logger::error('system', "Fatal error: " . $e->getMessage(), [
+        'trace' => $e->getTraceAsString()
+    ]);
     exit(1);
 }

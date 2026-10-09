@@ -45,6 +45,8 @@ if (!is_dir($tempDir) || !is_writable($tempDir)) {
     $tempDir = sys_get_temp_dir();
 }
 
+\TwitterDlBot\Logger::init(realpath($tempDir) ?: $tempDir);
+
 return [
     'bot_token' => env('TELEGRAM_BOT_TOKEN', ''),
     'admin_chat_id' => env('ADMIN_CHAT_ID', ''),
@@ -53,4 +55,5 @@ return [
     'http_timeout' => (int) env('HTTP_TIMEOUT', 60),
     'webhook_url' => env('WEBHOOK_URL', ''),
     'webhook_secret' => env('WEBHOOK_SECRET', ''),
+    'log_password' => env('LOG_PASSWORD', ''),
 ];

@@ -36,13 +36,15 @@ TwitterDlBot/
 ├── autoload.php          # Zero-dependency PSR-4 autoloader
 ├── bot.php               # Long-polling daemon (CLI)
 ├── webhook.php           # Webhook handler (HTTP POST)
+├── log.php               # Live Web Monitor (Logs, IPs, Errors & Telegram status)
 ├── set_webhook.php       # CLI helper to manage webhook registration
 ├── composer.json         # Standard Composer package definition
 ├── tmp/                  # Temporary buffer directory (auto-created)
 └── src/
     ├── TelegramBot.php       # Telegram Bot API client wrapper
     ├── TwitterDownloader.php # Twitter link parser & video resolver
-    └── BotHandler.php        # Update router and message handler
+    ├── BotHandler.php        # Update router and message handler
+    └── Logger.php            # Activity, IP, User-Agent & error logger
 ```
 
 ---
@@ -214,6 +216,19 @@ php set_webhook.php delete
 
 4. **Writable `tmp/` Directory**:
    - Ensure PHP has write permissions to create temporary files in `./tmp` for video buffer uploads.
+
+---
+
+## 📊 Live Activity, IP & Error Monitor (`log.php`)
+
+Visit `https://yourdomain.com/log.php` in any web browser to open the real-time activity and diagnostics dashboard:
+
+- **Client IP Tracking**: Accurately records visitor and Telegram Bot API server IPs (supports Cloudflare, Reverse Proxies, and direct connections).
+- **User-Agent Inspector**: Clearly displays incoming `User-Agent` strings and highlights `[EMPTY/MISSING]` headers so you can easily spot if ModSecurity or WAF blocked a request.
+- **Telegram Webhook Health Card**: Live check against Telegram's Bot API displaying your active webhook URL, pending update queue count, and any recent error messages.
+- **Detailed Inspection**: Click any row to view full incoming update payloads, JSON bodies, and error stack traces.
+- **Live Auto-Refresh**: Automatically polls for new events without reloading the page.
+- **Security**: To restrict access, simply set `LOG_PASSWORD="your_password"` in `.env`.
 
 ---
 
