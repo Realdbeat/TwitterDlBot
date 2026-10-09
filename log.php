@@ -82,6 +82,8 @@ if ($action !== '' && $isAuthenticated) {
                 'time' => date('Y-m-d H:i:s'),
                 'timezone' => date_default_timezone_get(),
                 'log_file' => Logger::getLogFilePath(),
+                'bot_script' => __DIR__ . '/bot.php',
+                'cron_command' => '* * * * * /usr/local/bin/php ' . __DIR__ . '/bot.php >/dev/null 2>&1'
             ]
         ]);
         exit;
@@ -878,6 +880,7 @@ if (!$isAuthenticated): ?>
         }
 
         function renderDashboard(data) {
+            window.lastServerData = data.server || {};
             // Update Stats
             const s = data.stats || {};
             document.getElementById('stat-total').innerText = s.total || 0;
@@ -986,9 +989,14 @@ if (!$isAuthenticated): ?>
                     `Error: ${escapeHtml(lastError)} (${lastErrorDate})`;
                 action.innerHTML = `<button class="btn btn-danger" onclick="deleteWebhookAction()">Clear Webhook</button>`;
             } else if (!wh.url) {
+                const cronCmd = (window.lastServerData && window.lastServerData.cron_command) 
+                    ? window.lastServerData.cron_command 
+                    : '* * * * * php /home/username/public_html/bot.php >/dev/null 2>&1';
                 banner.className = 'webhook-banner';
-                title.innerHTML = `ℹ️ <span>Webhook is Inactive (Polling Mode Ready)</span>`;
-                desc.innerText = `No webhook is set. You can run 'php bot.php' for long polling.`;
+                title.innerHTML = `ℹ️ <span>Long Polling Mode Active (Webhook Cleared)</span>`;
+                desc.innerHTML = `No webhook is active. Telegram updates can now be received by <b>bot.php</b>.<br>` +
+                    `⏰ <b>cPanel Cron Setup:</b> In cPanel &gt; Cron Jobs, add a job running every minute (<code>* * * * *</code>):<br>` +
+                    `<code style="background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 4px; color: #a5f3fc;">${escapeHtml(cronCmd)}</code>`;
                 action.innerHTML = '';
             } else {
                 banner.className = 'webhook-banner healthy';

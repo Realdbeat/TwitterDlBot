@@ -42,6 +42,20 @@ if (empty($config['bot_token']) || $config['bot_token'] === 'YOUR_TELEGRAM_BOT_T
     exit(1);
 }
 
+// Single-instance lock to prevent duplicate polling processes (crucial for shared hosting / cron jobs)
+$lockPath = ($config['temp_dir'] ?? sys_get_temp_dir()) . '/bot_polling.lock';
+$lockFp = @fopen($lockPath, 'c+');
+if (!$lockFp || !@flock($lockFp, LOCK_EX | LOCK_NB)) {
+    logInfo("Another bot.php process is already running. Exiting cleanly.");
+    exit(0);
+}
+register_shutdown_function(function() use ($lockFp) {
+    if (is_resource($lockFp)) {
+        @flock($lockFp, LOCK_UN);
+        @fclose($lockFp);
+    }
+});
+
 try {
     $bot = new TelegramBot($config['bot_token'], $config['http_timeout']);
     $downloader = new TwitterDownloader($config['http_timeout']);
