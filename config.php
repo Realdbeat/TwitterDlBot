@@ -41,6 +41,9 @@ $tempDir = env('TEMP_DIR', __DIR__ . '/tmp');
 if (!is_dir($tempDir)) {
     @mkdir($tempDir, 0777, true);
 }
+if (!is_dir($tempDir) || !is_writable($tempDir)) {
+    $tempDir = sys_get_temp_dir();
+}
 
 return [
     'bot_token' => env('TELEGRAM_BOT_TOKEN', ''),

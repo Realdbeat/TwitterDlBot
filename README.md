@@ -137,7 +137,7 @@ https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://yourdomain.c
 
 **Real Example:**
 ```text
-https://api.telegram.org/bot8625947839:AAGtptNOl3ffq8uAQ9Br_YKmSMv41cWK0SA/setWebhook?url=https://xdlbot.mossubyte.com.ng/webhook.php
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://xdlbot.mossubyte.com.ng/webhook.php
 ```
 
 You will see Telegram's confirmation response:
