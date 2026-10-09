@@ -1,0 +1,14 @@
+# Allow Telegram Bot API POST requests
+<IfModule mod_security.c>
+    SecFilterEngine Off
+    SecFilterScanPOST Off
+</IfModule>
+
+<IfModule mod_security2.c>
+    SecRuleEngine Off
+</IfModule>
+
+# Ensure PHP scripts execute and accept POST data
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+</IfModule>

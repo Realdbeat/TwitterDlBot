@@ -110,26 +110,98 @@ Now open Telegram, message your bot `/start`, send any Twitter/X video link, and
 
 ## 🌐 Running in Webhook Mode (Production)
 
-If you have a server with a public domain and HTTPS (e.g. Nginx/Apache):
+If you have a web server with a public domain and an SSL certificate (HTTPS):
 
-1. Put the files in your web directory (e.g. `/var/www/twitterbot`).
-2. Set your webhook URL in `.env`:
-   ```env
-   WEBHOOK_URL="https://yourdomain.com/webhook.php"
-   WEBHOOK_SECRET="random_secure_secret_token"
-   ```
-3. Register the webhook with Telegram:
-   ```bash
-   php set_webhook.php set https://yourdomain.com/webhook.php
-   ```
-4. Check webhook status anytime:
-   ```bash
-   php set_webhook.php info
-   ```
-5. If you want to switch back to polling later:
-   ```bash
-   php set_webhook.php delete
-   ```
+### Step 1: Upload Files to Server
+Place all the bot files in your public web directory (e.g. `public_html/` or `/var/www/twitterbot`).
+
+### Step 2: Configure Environment
+Make sure your `.env` file on the server has your bot token:
+```env
+TELEGRAM_BOT_TOKEN="your_bot_token_from_botfather"
+WEBHOOK_URL="https://yourdomain.com/webhook.php"
+WEBHOOK_SECRET="optional_random_secret_token"
+```
+
+---
+
+### Step 3: Register the Webhook With Telegram
+
+Choose any of the following methods to activate your webhook:
+
+#### Method A: Directly via Browser (Fastest)
+Replace `<YOUR_BOT_TOKEN>` and your domain, then open this URL in your browser:
+```text
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://yourdomain.com/webhook.php
+```
+
+**Real Example:**
+```text
+https://api.telegram.org/bot8625947839:AAGtptNOl3ffq8uAQ9Br_YKmSMv41cWK0SA/setWebhook?url=https://xdlbot.mossubyte.com.ng/webhook.php
+```
+
+You will see Telegram's confirmation response:
+```json
+{
+  "ok": true,
+  "result": true,
+  "description": "Webhook was set"
+}
+```
+
+#### Method B: Using the CLI Tool (`set_webhook.php`)
+Run this command from your project root in the server terminal:
+```bash
+php set_webhook.php set https://yourdomain.com/webhook.php
+```
+
+#### Method C: Using cURL
+```bash
+curl -F "url=https://yourdomain.com/webhook.php" https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook
+```
+
+---
+
+### Step 4: Verify Webhook Status
+
+To check if Telegram is successfully delivering messages to your webhook:
+
+**Via Browser:**
+```text
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo
+```
+
+**Via CLI:**
+```bash
+php set_webhook.php info
+```
+
+Look for:
+- `"url"`: Should point to your `https://.../webhook.php`
+- `"pending_update_count"`: `0` (means all updates are being delivered immediately)
+- `"last_error_message"`: None
+
+---
+
+### How to Delete / Unregister Webhook
+If you ever want to switch back to local Long Polling (`php bot.php`), delete the webhook first:
+
+**Via Browser:**
+```text
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/deleteWebhook
+```
+
+**Via CLI:**
+```bash
+php set_webhook.php delete
+```
+
+---
+
+### ⚠️ Common Webhook Gotchas
+1. **HTTPS Required**: Telegram Bot API only accepts HTTPS URLs with a valid SSL certificate (Let's Encrypt, Cloudflare, etc.).
+2. **Opening `webhook.php` in a browser**: Opening the file directly in a web browser sends a `GET` request. Telegram sends bot events using `POST`. Our script displays a friendly health check when visited via `GET`.
+3. **Writable `tmp/` Directory**: Ensure PHP has write permissions to create temporary files in `./tmp` for large video buffer uploads.
 
 ---
 
@@ -215,6 +287,3 @@ php bot.php
 ## 📄 License
 
 MIT License. Free to use and modify for personal or commercial projects.
-
-
-https://api.telegram.org/8625947839:AAGtptNOl3ffq8uAQ9Br_YKmSMv41cWK0SA/setWebhook?url=https://xdlbot.mossubyte.com.ng/webhook.php
