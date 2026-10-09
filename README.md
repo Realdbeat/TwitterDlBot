@@ -1,20 +1,26 @@
-# 📥 Twitter (X) Video Downloader Telegram Bot (PHP)
+# 📥 Twitter (X) & TikTok Video Downloader Telegram Bot (PHP)
 
-A fast, lightweight, and zero-external-dependency Telegram bot built in pure **PHP 8** that allows users to send any Twitter / X video link and receive the playable video directly in chat.
+A fast, lightweight, and zero-external-dependency Telegram bot built in pure **PHP 8** that allows users to send any Twitter / X or TikTok video link and receive the playable, watermark-free video directly in chat.
 
 ---
 
 ## ✨ Features
 
 - **Direct Video Delivery**: Sends the highest quality MP4 video available directly into the Telegram chat with native video player support.
+- **Watermark-Free TikTok Downloads**: Automatically resolves HD and standard TikTok videos without watermarks, with one-tap background audio/MP3 extraction and photo slideshow support.
 - **Multiple URL Formats Supported**:
-  - `https://x.com/username/status/1234567890`
-  - `https://twitter.com/username/status/1234567890`
-  - `https://mobile.twitter.com/...` or `https://m.twitter.com/...`
-  - `https://x.com/i/status/1234567890`
-  - Embed proxies: `fxtwitter.com`, `fixupx.com`, `vxtwitter.com`
-  - Short links: `t.co/...` (auto-expanded)
-- **Multi-Tier Video Extraction**: Uses redundant resolution engines (FxTwitter API, vxTwitter API, and direct CDN resolvers) for maximum uptime without needing Twitter developer keys.
+  - **Twitter / X**:
+    - `https://x.com/username/status/1234567890`
+    - `https://twitter.com/username/status/1234567890`
+    - `https://mobile.twitter.com/...` or `https://m.twitter.com/...`
+    - Embed proxies: `fxtwitter.com`, `fixupx.com`, `vxtwitter.com`
+    - Short links: `t.co/...` (auto-expanded)
+  - **TikTok**:
+    - `https://www.tiktok.com/@username/video/1234567890`
+    - `https://www.tiktok.com/@username/photo/1234567890` (photo carousels)
+    - `https://m.tiktok.com/v/1234567890.html`
+    - Short links: `vm.tiktok.com/...`, `vt.tiktok.com/...`, `tiktok.com/t/...` (auto-expanded)
+- **Multi-Tier Video Extraction**: Uses redundant resolution engines (TikWM API, tnktok/fxTikTok, FxTwitter API, vxTwitter API, and direct CDN resolvers) for maximum uptime without needing API keys.
 - **Smart Upload Strategy**:
   1. *Instant URL Transfer*: Tries sending via direct stream URL first (zero server bandwidth consumption).
   2. *Chunked Local Buffer*: Automatically buffers to local storage and uploads via `multipart/form-data` if Telegram fails to fetch the remote URL.
@@ -43,6 +49,7 @@ TwitterDlBot/
 └── src/
     ├── TelegramBot.php       # Telegram Bot API client wrapper
     ├── TwitterDownloader.php # Twitter link parser & video resolver
+    ├── TikTokDownloader.php  # TikTok watermark-free video & audio resolver
     ├── BotHandler.php        # Update router and message handler
     └── Logger.php            # Activity, IP, User-Agent & error logger
 ```

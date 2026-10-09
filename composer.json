@@ -1,6 +1,6 @@
 {
   "name": "twitterdl/telegram-bot",
-  "description": "Telegram bot that downloads Twitter / X videos in PHP",
+  "description": "Telegram bot that downloads Twitter / X and TikTok videos in PHP",
   "type": "project",
   "license": "MIT",
   "autoload": {

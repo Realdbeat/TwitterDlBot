@@ -158,6 +158,34 @@ class TelegramBot {
     }
 
     /**
+     * Send a photo (either by URL, file_id, or local CURLFile upload).
+     */
+    public function sendPhoto(int|string $chatId, mixed $photo, array $options = []): array {
+        $isMultipart = ($photo instanceof CURLFile);
+        $params = array_merge([
+            'chat_id' => $chatId,
+            'photo' => $photo,
+            'parse_mode' => 'HTML'
+        ], $options);
+
+        return $this->request('sendPhoto', $params, $isMultipart);
+    }
+
+    /**
+     * Send an audio file (either by URL, file_id, or local CURLFile upload).
+     */
+    public function sendAudio(int|string $chatId, mixed $audio, array $options = []): array {
+        $isMultipart = ($audio instanceof CURLFile);
+        $params = array_merge([
+            'chat_id' => $chatId,
+            'audio' => $audio,
+            'parse_mode' => 'HTML'
+        ], $options);
+
+        return $this->request('sendAudio', $params, $isMultipart);
+    }
+
+    /**
      * Send a group of media items (e.g. multiple videos).
      */
     public function sendMediaGroup(int|string $chatId, array $media): array {

@@ -13,6 +13,7 @@ $config = require __DIR__ . '/config.php';
 
 use TwitterDlBot\TelegramBot;
 use TwitterDlBot\TwitterDownloader;
+use TwitterDlBot\TikTokDownloader;
 use TwitterDlBot\BotHandler;
 
 // Set unlimited execution time for CLI daemon
@@ -30,7 +31,7 @@ function logError(string $message): void {
 }
 
 echo "===============================================\n";
-echo "   Twitter Video Downloader Telegram Bot       \n";
+echo " Twitter & TikTok Video Downloader Telegram Bot\n";
 echo "===============================================\n\n";
 
 if (empty($config['bot_token']) || $config['bot_token'] === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
@@ -59,7 +60,8 @@ register_shutdown_function(function() use ($lockFp) {
 try {
     $bot = new TelegramBot($config['bot_token'], $config['http_timeout']);
     $downloader = new TwitterDownloader($config['http_timeout']);
-    $handler = new BotHandler($bot, $downloader, $config);
+    $tiktokDownloader = new TikTokDownloader($config['http_timeout']);
+    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader);
 
     // Verify token with getMe
     logInfo("Testing connection to Telegram Bot API...");
