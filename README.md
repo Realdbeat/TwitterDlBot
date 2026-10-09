@@ -198,10 +198,22 @@ php set_webhook.php delete
 
 ---
 
-### ⚠️ Common Webhook Gotchas
-1. **HTTPS Required**: Telegram Bot API only accepts HTTPS URLs with a valid SSL certificate (Let's Encrypt, Cloudflare, etc.).
-2. **Opening `webhook.php` in a browser**: Opening the file directly in a web browser sends a `GET` request. Telegram sends bot events using `POST`. Our script displays a friendly health check when visited via `GET`.
-3. **Writable `tmp/` Directory**: Ensure PHP has write permissions to create temporary files in `./tmp` for large video buffer uploads.
+### ⚠️ Webhook Troubleshooting & Common Gotchas
+
+1. **Telegram reports `"Wrong response from the webhook: 403 Forbidden"`**:
+   - This occurs when your hosting provider's web server firewall (**ModSecurity** / cPanel security rules) intercepts Telegram's POST requests before they reach `webhook.php`.
+   - **Solution A**: Upload the provided [`.htaccess`](file:///c:/Users/OnlyGods/CodeBases/TwitterDlBot/.htaccess) file to your server root (it tells Apache to disable ModSecurity inspection for your webhook script).
+   - **Solution B (cPanel)**: Log into cPanel, search for **ModSecurity**, find `xdlbot.mossubyte.com.ng`, and toggle it to **Off**.
+   - **Solution C (Cloudflare)**: If your domain uses Cloudflare, go to **Security > WAF** and create an allow rule for Telegram's IP ranges or path `/webhook.php`.
+
+2. **Opening `webhook.php` in a browser**:
+   - Opening the URL in a browser sends an HTTP `GET` request. Telegram sends bot events using `POST`. Our script displays a friendly health check status when visited via `GET`.
+
+3. **HTTPS Required**:
+   - Telegram Bot API strictly requires a valid SSL/TLS certificate (HTTPS). Self-signed or HTTP connections are rejected.
+
+4. **Writable `tmp/` Directory**:
+   - Ensure PHP has write permissions to create temporary files in `./tmp` for video buffer uploads.
 
 ---
 
