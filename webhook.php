@@ -36,13 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     sendResponse(405, ['ok' => false, 'error' => 'Method Not Allowed']);
 }
 
-// Check secret token if configured
-if (!empty($config['webhook_secret'])) {
-    $incomingSecret = $_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '';
-    if ($incomingSecret !== $config['webhook_secret']) {
-        sendResponse(403, ['ok' => false, 'error' => 'Unauthorized']);
-    }
-}
+
 
 $rawInput = file_get_contents('php://input');
 if (empty($rawInput)) {
@@ -52,12 +46,6 @@ if (empty($rawInput)) {
 $update = json_decode($rawInput, true);
 if (!is_array($update)) {
     sendResponse(400, ['ok' => false, 'error' => 'Invalid JSON payload']);
-}
-
-// Acknowledge Telegram immediately to prevent re-deliveries if processing takes a few seconds
-if (function_exists('fastcgi_finish_request')) {
-    echo json_encode(['ok' => true]);
-    fastcgi_finish_request();
 }
 
 try {
@@ -72,6 +60,4 @@ try {
     @file_put_contents($logFile, "[{$time}] Webhook error: {$e->getMessage()}\n", FILE_APPEND);
 }
 
-if (!function_exists('fastcgi_finish_request')) {
-    sendResponse(200, ['ok' => true]);
-}
+sendResponse(200, ['ok' => true]);
