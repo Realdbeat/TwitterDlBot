@@ -217,9 +217,31 @@ php set_webhook.php delete
 
 ---
 
-## 🛠️ Keeping Long Polling Running in the Background
+## 🚀 Running on Shared Hosting (cPanel / Apache) vs VPS
 
-### Using Systemd (Linux VPS)
+### 🌟 If You Are on Shared Hosting (cPanel):
+On shared hosting, **you do NOT need Systemd, PM2, or any background daemon at all!**
+
+Shared hosting is designed to use **Webhook Mode (`webhook.php`)**:
+1. Simply upload the files to your domain directory (`public_html` or subdomain folder).
+2. Register your webhook once with Telegram (see [Webhook Mode](#-running-in-webhook-mode-production) above).
+3. **That's it!** You don't need any terminal or process manager running. Every time a user sends a link, Telegram automatically invokes `webhook.php`, which processes the request and sends the video 24/7.
+
+*(Optional)* If you ever want to run the polling script (`bot.php`) on shared hosting instead of webhooks, you can use **cPanel Cron Jobs**:
+- Go to **cPanel > Cron Jobs**
+- Set schedule (e.g. `* * * * *` or every 5 minutes):
+  ```bash
+  /usr/local/bin/php /home/username/public_html/bot.php >/dev/null 2>&1
+  ```
+*(Note: Webhook mode is strongly recommended over Cron for shared hosting.)*
+
+---
+
+### 🖥️ If You Are on a VPS / Dedicated Server (Systemd / PM2)
+
+If you are running the Long-Polling daemon (`php bot.php`) on a Linux VPS:
+
+#### Using Systemd
 Create `/etc/systemd/system/twitter-bot.service`:
 ```ini
 [Unit]
@@ -245,14 +267,14 @@ sudo systemctl enable --now twitter-bot
 sudo journalctl -u twitter-bot -f
 ```
 
-### Using PM2
+#### Using PM2
 ```bash
 pm2 start bot.php --name "twitter-dl-bot" --interpreter php
 pm2 save
 pm2 startup
 ```
 
-### Using Screen or Tmux
+#### Using Screen or Tmux
 ```bash
 screen -S twitterbot
 php bot.php
