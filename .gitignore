@@ -1,0 +1,10 @@
+# Environment secrets
+.env
+
+# Temporary download files and logs
+tmp/
+*.log
+
+# Composer
+vendor/
+composer.lock

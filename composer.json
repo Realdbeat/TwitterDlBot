@@ -1,0 +1,17 @@
+{
+  "name": "twitterdl/telegram-bot",
+  "description": "Telegram bot that downloads Twitter / X videos in PHP",
+  "type": "project",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "TwitterDlBot\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.1",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "ext-mbstring": "*"
+  }
+}
