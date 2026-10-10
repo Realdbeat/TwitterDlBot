@@ -258,12 +258,21 @@ Shared hosting is designed to use **Webhook Mode (`webhook.php`)**:
 2. Register your webhook once with Telegram (see [Webhook Mode](#-running-in-webhook-mode-production) above).
 3. **That's it!** You don't need any terminal or process manager running. Every time a user sends a link, Telegram automatically invokes `webhook.php`, which processes the request and sends the video 24/7.
 
-*(Optional)* If you ever want to run the polling script (`bot.php`) on shared hosting instead of webhooks, you can use **cPanel Cron Jobs**:
-- Go to **cPanel > Cron Jobs**
-- Set schedule (e.g. `* * * * *` or every 5 minutes):
+*(Optional)* If you run polling on shared hosting instead of webhooks, you can use **cPanel Cron Jobs**:
+
+**Option A (Recommended — Web Cron via curl):**
+- In **cPanel > Cron Jobs**, set schedule to every minute (`* * * * *`):
   ```bash
-  /usr/local/bin/php /home/username/public_html/bot.php >/dev/null 2>&1
+  curl -s "https://yourdomain.com/poll.php" >/dev/null 2>&1
   ```
+  *(Uses your server's web PHP 8.1 engine, immune to CLI PHP version conflicts and background process kills)*.
+
+**Option B (CLI Cron with ea-php81):**
+- In **cPanel > Cron Jobs**, set:
+  ```bash
+  /usr/local/bin/ea-php81 /home/username/public_html/bot.php --cron >/dev/null 2>&1
+  ```
+  *(Always specify `/usr/local/bin/ea-php81` on cPanel instead of plain `/usr/local/bin/php` to guarantee PHP 8.1+ execution)*.
 *(Note: Webhook mode is strongly recommended over Cron for shared hosting.)*
 
 ---

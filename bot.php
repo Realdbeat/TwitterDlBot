@@ -8,6 +8,9 @@
 
 declare(strict_types=1);
 
+// Ensure working directory is always the script directory
+chdir(__DIR__);
+
 require_once __DIR__ . '/autoload.php';
 $config = require __DIR__ . '/config.php';
 
@@ -16,6 +19,11 @@ use TwitterDlBot\TwitterDownloader;
 use TwitterDlBot\TikTokDownloader;
 use TwitterDlBot\Database;
 use TwitterDlBot\BotHandler;
+
+// Parse CLI options
+$isOnce = in_array('--once', $argv ?? [], true);
+$isCron = in_array('--cron', $argv ?? [], true);
+$maxExecutionSeconds = $isCron ? 50 : 0; // In cron mode, exit cleanly before next minute
 
 // Set unlimited execution time for CLI daemon
 set_time_limit(0);
@@ -105,14 +113,24 @@ try {
         });
     }
 
+    $loopStartTime = time();
+
     while ($running) {
+        // In cron mode, terminate cleanly right before next minute's cron executes
+        if ($maxExecutionSeconds > 0 && (time() - $loopStartTime) >= $maxExecutionSeconds) {
+            logInfo("Cron cycle limit ({$maxExecutionSeconds}s) reached. Exiting cleanly for next scheduled cron.");
+            break;
+        }
+
         try {
-            $updates = $bot->getUpdates($offset, 100, 25);
+            $pollTimeout = ($maxExecutionSeconds > 0) ? min(15, max(1, $maxExecutionSeconds - (time() - $loopStartTime))) : 25;
+            $updates = $bot->getUpdates($offset, 100, $pollTimeout);
 
             if (!($updates['ok'] ?? false)) {
                 $err = $updates['description'] ?? 'Unknown error';
                 logError("Failed to fetch updates: {$err}");
-                sleep(3);
+                sleep(2);
+                if ($isOnce) break;
                 continue;
             }
 
@@ -146,9 +164,16 @@ try {
                     ]);
                 }
             }
+
+            // If --once was passed, exit after single check
+            if ($isOnce) {
+                logInfo("Completed --once polling run. Processed " . count($items) . " updates.");
+                break;
+            }
         } catch (\Throwable $e) {
             logError("Polling loop exception: " . $e->getMessage());
             \TwitterDlBot\Logger::error('system', "Polling loop error: " . $e->getMessage());
+            if ($isOnce) break;
             sleep(3);
         }
     }

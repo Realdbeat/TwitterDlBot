@@ -71,6 +71,14 @@ if ($action !== '' && $isAuthenticated) {
             }
         }
 
+        $detectedCliPhp = PHP_BINARY;
+        if (!file_exists($detectedCliPhp) || str_ends_with($detectedCliPhp, 'php-fpm')) {
+            $detectedCliPhp = file_exists('/usr/local/bin/ea-php81') ? '/usr/local/bin/ea-php81' : '/usr/local/bin/php';
+        }
+        $currentScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $currentHost = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $pollUrl = "{$currentScheme}://{$currentHost}/poll.php";
+
         echo json_encode([
             'ok' => true,
             'stats' => $stats,
@@ -83,7 +91,9 @@ if ($action !== '' && $isAuthenticated) {
                 'timezone' => date_default_timezone_get(),
                 'log_file' => Logger::getLogFilePath(),
                 'bot_script' => __DIR__ . '/bot.php',
-                'cron_command' => '* * * * * /usr/local/bin/php ' . __DIR__ . '/bot.php >/dev/null 2>&1'
+                'poll_url' => $pollUrl,
+                'cron_command' => '* * * * * curl -s "' . $pollUrl . '" >/dev/null 2>&1',
+                'cli_cron_command' => '* * * * * ' . $detectedCliPhp . ' ' . __DIR__ . '/bot.php --cron >/dev/null 2>&1'
             ]
         ]);
         exit;
@@ -989,20 +999,41 @@ if (!$isAuthenticated): ?>
                     `Error: ${escapeHtml(lastError)} (${lastErrorDate})`;
                 action.innerHTML = `<button class="btn btn-danger" onclick="deleteWebhookAction()">Clear Webhook</button>`;
             } else if (!wh.url) {
-                const cronCmd = (window.lastServerData && window.lastServerData.cron_command) 
+                const webCronCmd = (window.lastServerData && window.lastServerData.cron_command) 
                     ? window.lastServerData.cron_command 
-                    : '* * * * * php /home/username/public_html/bot.php >/dev/null 2>&1';
+                    : '* * * * * curl -s "https://yourdomain.com/poll.php" >/dev/null 2>&1';
+                const cliCronCmd = (window.lastServerData && window.lastServerData.cli_cron_command)
+                    ? window.lastServerData.cli_cron_command
+                    : '* * * * * /usr/local/bin/ea-php81 ' + (window.lastServerData?.bot_script || 'bot.php') + ' --cron >/dev/null 2>&1';
+                
                 banner.className = 'webhook-banner';
-                title.innerHTML = `ℹ️ <span>Long Polling Mode Active (Webhook Cleared)</span>`;
-                desc.innerHTML = `No webhook is active. Telegram updates can now be received by <b>bot.php</b>.<br>` +
-                    `⏰ <b>cPanel Cron Setup:</b> In cPanel &gt; Cron Jobs, add a job running every minute (<code>* * * * *</code>):<br>` +
-                    `<code style="background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 4px; color: #a5f3fc;">${escapeHtml(cronCmd)}</code>`;
-                action.innerHTML = '';
+                title.innerHTML = `ℹ️ <span>Polling Mode Active (Webhook Cleared)</span>`;
+                desc.innerHTML = `Telegram updates are ready to be fetched! You can process them right now or automate via cPanel cron:<br>` +
+                    `🌐 <b>Recommended Web Cron:</b> In cPanel &gt; Cron Jobs, add (every minute <code>* * * * *</code>):<br>` +
+                    `<code style="background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; display: inline-block; margin: 4px 0 6px; color: #a5f3fc;">${escapeHtml(webCronCmd)}</code><br>` +
+                    `⚙️ <b>Alternative CLI Cron:</b><br>` +
+                    `<code style="background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 2px; color: #e9d5ff;">${escapeHtml(cliCronCmd)}</code>`;
+                action.innerHTML = `<button class="btn" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-weight: 600; padding: 8px 14px; border: none; box-shadow: 0 0 15px rgba(16,185,129,0.4);" onclick="runWebPollAction()">⚡ Run Polling Cycle Now</button>`;
             } else {
                 banner.className = 'webhook-banner healthy';
                 title.innerHTML = `✅ <span>Telegram Webhook Healthy & Receiving Updates</span>`;
                 desc.innerHTML = `URL: <b>${escapeHtml(url)}</b> | Pending updates in queue: <b>${pending}</b>`;
                 action.innerHTML = `<button class="btn" onclick="deleteWebhookAction()">Delete Webhook</button>`;
+            }
+        }
+
+        async function runWebPollAction() {
+            try {
+                const res = await fetch('poll.php');
+                const data = await res.json();
+                if (data.ok) {
+                    alert(`✅ Polling cycle completed successfully!\nProcessed ${data.processed_count} update(s).`);
+                    fetchLogs();
+                } else {
+                    alert('⚠️ Polling error: ' + (data.error || JSON.stringify(data)));
+                }
+            } catch (err) {
+                alert('Request failed: ' + err.message);
             }
         }
 
