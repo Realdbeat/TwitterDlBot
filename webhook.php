@@ -12,6 +12,7 @@ $config = require __DIR__ . '/config.php';
 use TwitterDlBot\TelegramBot;
 use TwitterDlBot\TwitterDownloader;
 use TwitterDlBot\TikTokDownloader;
+use TwitterDlBot\Database;
 use TwitterDlBot\BotHandler;
 use TwitterDlBot\Logger;
 
@@ -88,10 +89,11 @@ Logger::info('webhook', "Incoming update #{$updateId} from @{$fromUser}: {$textP
 ]);
 
 try {
+    $db = new Database($config['temp_dir']);
     $bot = new TelegramBot($config['bot_token'], $config['http_timeout']);
     $downloader = new TwitterDownloader($config['http_timeout']);
     $tiktokDownloader = new TikTokDownloader($config['http_timeout']);
-    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader);
+    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader, $db);
 
     $handler->handleUpdate($update);
 

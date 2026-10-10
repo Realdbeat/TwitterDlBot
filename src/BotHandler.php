@@ -10,18 +10,21 @@ class BotHandler {
     private TelegramBot $bot;
     private TwitterDownloader $downloader;
     private TikTokDownloader $tiktokDownloader;
+    private Database $db;
     private array $config;
 
     public function __construct(
         TelegramBot $bot,
         TwitterDownloader $downloader,
         array $config,
-        ?TikTokDownloader $tiktokDownloader = null
+        ?TikTokDownloader $tiktokDownloader = null,
+        ?Database $db = null
     ) {
         $this->bot = $bot;
         $this->downloader = $downloader;
         $this->config = $config;
         $this->tiktokDownloader = $tiktokDownloader ?? new TikTokDownloader($config['http_timeout'] ?? 30);
+        $this->db = $db ?? new Database($config['temp_dir'] ?? sys_get_temp_dir());
     }
 
     /**
@@ -74,7 +77,15 @@ class BotHandler {
             }
         }
 
-        // Extract tweet and tiktok links from text
+        // 1. Check if user sent a TikTok profile page link (e.g., https://www.tiktok.com/@username)
+        $profileUsername = $this->tiktokDownloader->extractProfileUsername($text);
+        if ($profileUsername !== null) {
+            $userId = $message['from']['id'] ?? $chatId;
+            $this->processTikTokProfilePage($chatId, $userId, $profileUsername, $message['message_id'] ?? null);
+            return;
+        }
+
+        // 2. Extract single tweet and tiktok media links from text
         $tweetLinks = $this->downloader->extractTweetLinks($text);
         $tiktokLinks = $this->tiktokDownloader->extractTikTokLinks($text);
 
@@ -86,6 +97,7 @@ class BotHandler {
                     "<b>Examples:</b>\n" .
                     "• <code>https://x.com/username/status/1234567890</code>\n" .
                     "• <code>https://www.tiktok.com/@username/video/1234567890</code>\n" .
+                    "• <code>https://www.tiktok.com/@username</code> (Download creator's videos)\n" .
                     "• <code>https://vm.tiktok.com/ZMxxxxxx/</code>\n\n" .
                     "Type /help for instructions.",
                     [
@@ -491,9 +503,8 @@ class BotHandler {
         $text = "👋 <b>Hello, " . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . "!</b>\n\n" .
             "I am your <b>Twitter (X) & TikTok Video Downloader Bot</b>.\n\n" .
             "🚀 <b>How it works:</b>\n" .
-            "1. Copy any video link from <b>Twitter / X</b> or <b>TikTok</b>\n" .
-            "2. Send or paste it in this chat\n" .
-            "3. I'll download and send the video (watermark-free!) right back!\n\n" .
+            "1. Send any video link from <b>Twitter / X</b> or <b>TikTok</b> to get the watermark-free video!\n" .
+            "2. Or send a <b>TikTok Profile link</b> (e.g. <code>https://www.tiktok.com/@username</code>) to download all videos from their page (10 at a time)!\n\n" .
             "💡 <i>Try sending a link now!</i>";
 
         $keyboard = [
@@ -524,8 +535,10 @@ class BotHandler {
             "<b>TikTok:</b>\n" .
             "• <code>https://www.tiktok.com/@username/video/1234567890</code>\n" .
             "• <code>https://vm.tiktok.com/xxxxxx/</code> or <code>vt.tiktok.com/xxxxxx/</code>\n" .
-            "• <code>https://www.tiktok.com/@username/photo/1234567890</code> (photo slideshows)\n\n" .
+            "• <code>https://www.tiktok.com/@username/photo/1234567890</code> (photo slideshows)\n" .
+            "• <code>https://www.tiktok.com/@username</code> (Creator profile: download all videos)\n\n" .
             "<b>Features:</b>\n" .
+            "• 📥 <b>Profile Bulk Downloader:</b> Shows total videos, asks permission, and downloads 10 videos at a time with a 'Next' button!\n" .
             "• ✨ Automatic HD quality & watermark-free\n" .
             "• 🎵 One-tap background audio / MP3 download\n" .
             "• 🎥 Video and animated GIF support\n" .
@@ -544,10 +557,262 @@ class BotHandler {
             "• <b>Language:</b> PHP 8.x\n" .
             "• <b>Platform:</b> Telegram Bot API\n" .
             "• <b>Features:</b> Twitter / X & TikTok (Watermark-Free HD + MP3)\n" .
+            "• <b>Profile Downloader:</b> Bulk download 10 videos at a time from creator pages\n" .
+            "• <b>Storage:</b> SQLite Session & Queue Management\n" .
             "• <b>Source:</b> Open Source\n\n" .
             "Built to download public Twitter/X and TikTok media clips fast and effortlessly.";
 
         $this->bot->sendMessage($chatId, $text);
+    }
+
+    /**
+     * Process TikTok profile page request:
+     * 1. Fetches creator metadata (nickname, video count, followers).
+     * 2. Queues the first batch of videos in SQLite.
+     * 3. Sends confirmation prompt asking for user permission to start download.
+     */
+    private function processTikTokProfilePage(int|string $chatId, int|string $userId, string $username, ?int $replyToId): void {
+        $statusMsg = $this->bot->sendMessage(
+            $chatId,
+            "🔍 <i>Analyzing TikTok profile @{$username}...</i>",
+            ['reply_to_message_id' => $replyToId]
+        );
+        $statusMsgId = $statusMsg['result']['message_id'] ?? null;
+
+        $this->bot->sendChatAction($chatId, 'typing');
+
+        $profileInfo = $this->tiktokDownloader->getUserProfileInfo($username);
+
+        if ($profileInfo === null) {
+            $err = "❌ <b>Could not find TikTok profile @{$username}!</b>\n\nPlease verify the username and try again.";
+            if ($statusMsgId) {
+                $this->bot->editMessageText($chatId, $statusMsgId, $err);
+            } else {
+                $this->bot->sendMessage($chatId, $err, ['reply_to_message_id' => $replyToId]);
+            }
+            return;
+        }
+
+        if ($profileInfo['video_count'] <= 0) {
+            $err = "ℹ️ <b>No public videos found!</b>\n\nProfile <b>@{$username}</b> has 0 videos or the account is private.";
+            if ($statusMsgId) {
+                $this->bot->editMessageText($chatId, $statusMsgId, $err);
+            } else {
+                $this->bot->sendMessage($chatId, $err, ['reply_to_message_id' => $replyToId]);
+            }
+            return;
+        }
+
+        // Fetch initial batch of videos to queue
+        $batch = $this->tiktokDownloader->fetchUserVideos($username);
+        $sessionKey = 'tts_' . substr(md5(uniqid((string)mt_rand(), true)), 0, 16);
+
+        $sessionId = $this->db->createSession(
+            $sessionKey,
+            $chatId,
+            $userId,
+            $profileInfo['username'],
+            $profileInfo['nickname'],
+            $profileInfo['video_count'],
+            $batch['pagination_state'],
+            $batch['has_more']
+        );
+
+        if (!empty($batch['videos'])) {
+            $this->db->addVideosToSession($sessionId, $batch['videos']);
+        }
+
+        $nickname = htmlspecialchars($profileInfo['nickname'], ENT_QUOTES, 'UTF-8');
+        $uname = htmlspecialchars($profileInfo['username'], ENT_QUOTES, 'UTF-8');
+        $totalVideos = number_format($profileInfo['video_count']);
+        $followers = number_format($profileInfo['follower_count']);
+        $followerLine = ($profileInfo['follower_count'] > 0) ? "\n• 👥 <b>Followers:</b> {$followers}" : "";
+
+        $text = "👤 <b>TikTok Profile Found</b>\n\n" .
+            "• 🎬 <b>Creator:</b> {$nickname} (@{$uname})\n" .
+            "• 📹 <b>Total Videos:</b> {$totalVideos}{$followerLine}\n\n" .
+            "⚠️ <b>Download Permission:</b>\n" .
+            "Do you want to start downloading videos from this profile?\n" .
+            "Videos will be downloaded in batches of <b>10 at a time</b> with a <b>Next</b> button between batches.\n\n" .
+            "<i>Click below to confirm and begin downloading the first 10 videos.</i>";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '▶️ Start Download (First 10)', 'callback_data' => "tts_start:{$sessionKey}"]
+                ],
+                [
+                    ['text' => '❌ Cancel', 'callback_data' => "tts_cancel:{$sessionKey}"]
+                ]
+            ]
+        ];
+
+        if ($statusMsgId) {
+            $this->bot->editMessageText($chatId, $statusMsgId, $text, ['reply_markup' => $keyboard]);
+        } else {
+            $this->bot->sendMessage($chatId, $text, [
+                'reply_to_message_id' => $replyToId,
+                'reply_markup' => $keyboard
+            ]);
+        }
+    }
+
+    /**
+     * Executes a batch download of 10 videos for a profile session.
+     */
+    private function runBatchDownload(int|string $chatId, string $sessionKey): void {
+        $session = $this->db->getSession($sessionKey);
+        if (!$session) {
+            $this->bot->sendMessage($chatId, "⚠️ <i>Download session not found or expired.</i>");
+            return;
+        }
+
+        if (in_array($session['status'], ['stopped', 'cancelled'])) {
+            $this->bot->sendMessage($chatId, "ℹ️ <i>This download session was stopped. Send the profile link again to restart.</i>");
+            return;
+        }
+
+        $this->db->updateSessionStatus($sessionKey, 'in_progress');
+
+        // Check if we have at least 10 pending videos in SQLite; if not and has_more is true, fetch next page
+        $pending = $this->db->getPendingVideos((int)$session['id'], 10);
+        if (count($pending) < 10 && $session['has_more'] && !empty($session['pagination_state_array'])) {
+            $nextBatch = $this->tiktokDownloader->fetchUserVideos($session['username'], $session['pagination_state_array']);
+            if (!empty($nextBatch['videos'])) {
+                $this->db->addVideosToSession((int)$session['id'], $nextBatch['videos']);
+            }
+            $this->db->updateSessionPagination($sessionKey, $nextBatch['pagination_state'], $nextBatch['has_more']);
+            $session = $this->db->getSession($sessionKey);
+            $pending = $this->db->getPendingVideos((int)$session['id'], 10);
+        }
+
+        if (empty($pending)) {
+            $totalDownloaded = $this->db->countDownloadedVideos((int)$session['id']);
+            $this->db->updateSessionStatus($sessionKey, 'completed');
+            $this->bot->sendMessage(
+                $chatId,
+                "🎉 <b>All available videos have been downloaded!</b>\n\n" .
+                "Downloaded a total of <b>{$totalDownloaded} videos</b> from <b>@{$session['username']}</b>."
+            );
+            return;
+        }
+
+        $batchCount = count($pending);
+        $startNum = $session['downloaded_count'] + 1;
+        $endNum = $session['downloaded_count'] + $batchCount;
+
+        $progressMsg = $this->bot->sendMessage(
+            $chatId,
+            "⏳ <b>Downloading batch ({$startNum} to {$endNum} of " . number_format($session['total_videos']) . ")...</b>\n" .
+            "<i>Sending videos to chat now...</i>"
+        );
+        $progressMsgId = $progressMsg['result']['message_id'] ?? null;
+
+        $sentInBatch = 0;
+        foreach ($pending as $videoRow) {
+            $this->bot->sendChatAction($chatId, 'upload_video');
+
+            $videoInfo = $this->tiktokDownloader->getVideoInfo($videoRow['url'], $videoRow['video_id'], $session['username']);
+
+            if (!$videoInfo || empty($videoInfo['videos'])) {
+                $this->db->markVideoFailed((int)$videoRow['id']);
+                continue;
+            }
+
+            $currentNum = $session['downloaded_count'] + $sentInBatch + 1;
+            $video = $videoInfo['videos'][0];
+            $videoUrl = $video['url'];
+
+            $title = !empty($videoInfo['text']) ? $videoInfo['text'] : $videoRow['title'];
+            $cleanTitle = htmlspecialchars(trim($title), ENT_QUOTES, 'UTF-8');
+            if (mb_strlen($cleanTitle) > 180) {
+                $cleanTitle = mb_substr($cleanTitle, 0, 177) . '...';
+            }
+
+            $caption = "📹 <b>Video #{$currentNum} of " . number_format($session['total_videos']) . "</b>\n" .
+                "🎬 <i>\"{$cleanTitle}\"</i>\n" .
+                "👤 @{$session['username']}\n\n" .
+                "🔗 <a href=\"{$videoRow['url']}\">View on TikTok</a>";
+
+            $videoOptions = [
+                'caption' => $caption,
+                'duration' => !empty($video['duration']) ? (int)$video['duration'] : null,
+                'width' => !empty($video['width']) ? (int)$video['width'] : null,
+                'height' => !empty($video['height']) ? (int)$video['height'] : null
+            ];
+
+            // 1. Direct URL send
+            $res = $this->bot->sendVideo($chatId, $videoUrl, $videoOptions);
+            $success = $res['ok'] ?? false;
+
+            // 2. Local buffer fallback if Telegram rejects URL
+            if (!$success) {
+                $tempFile = $this->tiktokDownloader->downloadVideoToTemp(
+                    $videoUrl,
+                    $this->config['temp_dir'],
+                    $this->config['max_file_size_mb']
+                );
+                if ($tempFile && file_exists($tempFile)) {
+                    $curlFile = new CURLFile($tempFile, 'video/mp4', 'tiktok_video.mp4');
+                    $uploadRes = $this->bot->sendVideo($chatId, $curlFile, $videoOptions);
+                    if (!($uploadRes['ok'] ?? false)) {
+                        $uploadRes = $this->bot->sendDocument($chatId, $curlFile, $videoOptions);
+                    }
+                    @unlink($tempFile);
+                    $success = $uploadRes['ok'] ?? false;
+                }
+            }
+
+            if ($success) {
+                $this->db->markVideoDownloaded((int)$videoRow['id']);
+                $sentInBatch++;
+                $this->db->incrementSessionDownloaded($sessionKey, 1);
+            } else {
+                $this->db->markVideoFailed((int)$videoRow['id']);
+            }
+
+            // Sleep 1 second between videos to respect Telegram rate limits
+            sleep(1);
+        }
+
+        // Clean up progress message
+        if ($progressMsgId) {
+            $this->bot->deleteMessage($chatId, $progressMsgId);
+        }
+
+        // Refresh session
+        $session = $this->db->getSession($sessionKey);
+        $totalDownloaded = $this->db->countDownloadedVideos((int)$session['id']);
+        $pendingLeft = $this->db->countPendingVideos((int)$session['id']);
+        $hasMore = $session['has_more'] || ($pendingLeft > 0);
+
+        if ($hasMore) {
+            $summaryText = "✅ <b>Batch Completed!</b>\n\n" .
+                "• 📥 <b>Sent in this batch:</b> {$sentInBatch} videos\n" .
+                "• 📊 <b>Total downloaded so far:</b> {$totalDownloaded} of " . number_format($session['total_videos']) . "\n\n" .
+                "Would you like to download the next 10 videos?";
+
+            $keyboard = [
+                'inline_keyboard' => [
+                    [
+                        ['text' => '⏩ Download Next 10', 'callback_data' => "tts_next:{$sessionKey}"]
+                    ],
+                    [
+                        ['text' => '⏹️ Stop Download', 'callback_data' => "tts_stop:{$sessionKey}"]
+                    ]
+                ]
+            ];
+
+            $this->bot->sendMessage($chatId, $summaryText, ['reply_markup' => $keyboard]);
+        } else {
+            $this->db->updateSessionStatus($sessionKey, 'completed');
+            $this->bot->sendMessage(
+                $chatId,
+                "🎉 <b>Download Complete!</b>\n\n" .
+                "All available videos from <b>@{$session['username']}</b> have been downloaded!\n" .
+                "Total: <b>{$totalDownloaded} videos</b>."
+            );
+        }
     }
 
     /**
@@ -584,6 +849,25 @@ class BotHandler {
                 }
             } else {
                 $this->bot->sendMessage($chatId, "⚠️ <i>Audio download link expired. Please re-send the TikTok link to download audio.</i>");
+            }
+        } elseif (str_starts_with($data, 'tts_start:')) {
+            $sessionKey = substr($data, 10);
+            $this->runBatchDownload($chatId, $sessionKey);
+        } elseif (str_starts_with($data, 'tts_next:')) {
+            $sessionKey = substr($data, 9);
+            $this->runBatchDownload($chatId, $sessionKey);
+        } elseif (str_starts_with($data, 'tts_stop:')) {
+            $sessionKey = substr($data, 9);
+            $this->db->updateSessionStatus($sessionKey, 'stopped');
+            $session = $this->db->getSession($sessionKey);
+            $cnt = $session['downloaded_count'] ?? 0;
+            $uname = $session['username'] ?? 'creator';
+            $this->bot->sendMessage($chatId, "⏹️ <b>Download stopped.</b> Total videos downloaded: <b>{$cnt}</b> from @{$uname}.");
+        } elseif (str_starts_with($data, 'tts_cancel:')) {
+            $sessionKey = substr($data, 11);
+            $this->db->updateSessionStatus($sessionKey, 'cancelled');
+            if (isset($callback['message']['message_id'])) {
+                $this->bot->editMessageText($chatId, $callback['message']['message_id'], "❌ <i>Download cancelled.</i>");
             }
         }
     }

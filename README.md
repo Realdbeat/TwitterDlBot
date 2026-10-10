@@ -8,6 +8,13 @@ A fast, lightweight, and zero-external-dependency Telegram bot built in pure **P
 
 - **Direct Video Delivery**: Sends the highest quality MP4 video available directly into the Telegram chat with native video player support.
 - **Watermark-Free TikTok Downloads**: Automatically resolves HD and standard TikTok videos without watermarks, with one-tap background audio/MP3 extraction and photo slideshow support.
+- **TikTok Profile Bulk Downloader**:
+  - Send any creator's profile page link: `https://www.tiktok.com/@username`
+  - Scrapes creator statistics and displays total video count.
+  - Asks user permission to confirm before initiating the download.
+  - Downloads videos in clean batches of **10 videos at a time**.
+  - Provides interactive **`[⏩ Download Next 10]`** and **`[⏹️ Stop Download]`** buttons.
+  - Remembers session progress using SQLite, ensuring zero duplicate downloads.
 - **Multiple URL Formats Supported**:
   - **Twitter / X**:
     - `https://x.com/username/status/1234567890`
@@ -16,8 +23,9 @@ A fast, lightweight, and zero-external-dependency Telegram bot built in pure **P
     - Embed proxies: `fxtwitter.com`, `fixupx.com`, `vxtwitter.com`
     - Short links: `t.co/...` (auto-expanded)
   - **TikTok**:
-    - `https://www.tiktok.com/@username/video/1234567890`
-    - `https://www.tiktok.com/@username/photo/1234567890` (photo carousels)
+    - `https://www.tiktok.com/@username` (Creator profile bulk download)
+    - `https://www.tiktok.com/@username/video/1234567890` (Single video)
+    - `https://www.tiktok.com/@username/photo/1234567890` (Photo carousels)
     - `https://m.tiktok.com/v/1234567890.html`
     - Short links: `vm.tiktok.com/...`, `vt.tiktok.com/...`, `tiktok.com/t/...` (auto-expanded)
 - **Multi-Tier Video Extraction**: Uses redundant resolution engines (TikWM API, tnktok/fxTikTok, FxTwitter API, vxTwitter API, and direct CDN resolvers) for maximum uptime without needing API keys.
@@ -28,7 +36,7 @@ A fast, lightweight, and zero-external-dependency Telegram bot built in pure **P
 - **Dual Execution Modes**:
   - **Long Polling (`bot.php`)**: Run locally or on any VPS without domain or SSL.
   - **Webhook (`webhook.php`)**: For production web servers (Nginx, Apache, Caddy).
-- **Zero Heavy Dependencies**: Runs with standard PHP (cURL, JSON, mbstring). No Composer installation required (built-in PSR-4 autoloader included).
+- **Zero Heavy Dependencies**: Runs with standard PHP (cURL, JSON, mbstring, PDO SQLite). No Composer installation required (built-in PSR-4 autoloader included).
 
 ---
 
@@ -45,11 +53,12 @@ TwitterDlBot/
 ├── log.php               # Live Web Monitor (Logs, IPs, Errors & Telegram status)
 ├── set_webhook.php       # CLI helper to manage webhook registration
 ├── composer.json         # Standard Composer package definition
-├── tmp/                  # Temporary buffer directory (auto-created)
+├── tmp/                  # Temporary buffer & SQLite database directory
 └── src/
     ├── TelegramBot.php       # Telegram Bot API client wrapper
     ├── TwitterDownloader.php # Twitter link parser & video resolver
     ├── TikTokDownloader.php  # TikTok watermark-free video & audio resolver
+    ├── Database.php          # SQLite PDO session & video queue manager
     ├── BotHandler.php        # Update router and message handler
     └── Logger.php            # Activity, IP, User-Agent & error logger
 ```
@@ -61,7 +70,7 @@ TwitterDlBot/
 ### 1. Requirements
 
 - PHP **8.1** or higher
-- PHP extensions: `curl`, `json`, `mbstring`, `fileinfo` (enabled by default in most PHP installations)
+- PHP extensions: `curl`, `json`, `mbstring`, `fileinfo`, `pdo_sqlite` (enabled by default in most PHP installations)
 
 Check your PHP version:
 ```bash

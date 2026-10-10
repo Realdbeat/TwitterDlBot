@@ -110,6 +110,221 @@ class TikTokDownloader {
     }
 
     /**
+     * Extracts a TikTok profile username from message text if a profile URL is provided.
+     * Excludes direct video/photo URLs.
+     */
+    public function extractProfileUsername(string $text): ?string {
+        // Exclude if it's explicitly a video or photo URL
+        if (preg_match('/tiktok\.com\/@[a-zA-Z0-9_.-]+\/(video|photo)\/[0-9]+/i', $text)) {
+            return null;
+        }
+
+        if (preg_match('/(?:https?:\/\/)?(?:(?:www|m)\.)?tiktok\.com\/@([a-zA-Z0-9_.-]+)(?:\/)?(?:\?[^\s]*)?/i', $text, $m)) {
+            return ltrim($m[1], '@');
+        }
+
+        if (preg_match('/(?:https?:\/\/)?(?:(?:www|m)\.)?urlebird\.com\/user\/([a-zA-Z0-9_.-]+)(?:\/)?(?:\?[^\s]*)?/i', $text, $m)) {
+            return ltrim($m[1], '@');
+        }
+
+        return null;
+    }
+
+    /**
+     * Retrieves creator profile metadata (nickname, video count, follower count, avatar).
+     */
+    public function getUserProfileInfo(string $username): ?array {
+        $username = ltrim($username, '@');
+        $url = "https://www.tiktok.com/@{$username}";
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $this->httpTimeout,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_USERAGENT => self::USER_AGENT,
+            CURLOPT_HTTPHEADER => [
+                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language: en-US,en;q=0.9'
+            ]
+        ]);
+        $html = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+        if ($code === 200 && $html && preg_match('/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)<\/script>/s', $html, $m)) {
+            $json = json_decode($m[1], true);
+            $userDetail = $json['__DEFAULT_SCOPE__']['webapp.user-detail'] ?? [];
+            if (!empty($userDetail['userInfo']['user'])) {
+                $user = $userDetail['userInfo']['user'];
+                $stats = $userDetail['userInfo']['stats'] ?? [];
+                return [
+                    'username' => $user['uniqueId'] ?? $username,
+                    'nickname' => $user['nickname'] ?? $username,
+                    'avatar' => $user['avatarLarger'] ?? $user['avatarThumb'] ?? null,
+                    'sec_uid' => $user['secUid'] ?? null,
+                    'video_count' => (int)($stats['videoCount'] ?? 0),
+                    'follower_count' => (int)($stats['followerCount'] ?? 0),
+                    'likes_count' => (float)($stats['heartCount'] ?? $stats['heart'] ?? 0)
+                ];
+            }
+        }
+
+        // Fallback: Urlebird user page parsing
+        $ch2 = curl_init("https://urlebird.com/user/{$username}/");
+        curl_setopt_array($ch2, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $this->httpTimeout,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_USERAGENT => self::USER_AGENT
+        ]);
+        $uHtml = curl_exec($ch2);
+        if (curl_getinfo($ch2, CURLINFO_HTTP_CODE) === 200 && $uHtml) {
+            $nickname = $username;
+            if (preg_match('/<title>([^<]+)\(@[^\)]+\)<\/title>/i', $uHtml, $titleM)) {
+                $nickname = trim($titleM[1]);
+            }
+            $videoCount = 0;
+            if (preg_match('/([0-9,.]+)\s*(?:videos|Videos)/i', $uHtml, $vcM)) {
+                $videoCount = (int)str_replace([',', '.'], '', $vcM[1]);
+            }
+            return [
+                'username' => $username,
+                'nickname' => $nickname,
+                'avatar' => null,
+                'sec_uid' => null,
+                'video_count' => $videoCount,
+                'follower_count' => 0,
+                'likes_count' => 0
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Fetches user videos in paginated batches.
+     *
+     * @return array{videos: array<int, array{id: string, title: string, url: string}>, has_more: bool, pagination_state: ?array}
+     */
+    public function fetchUserVideos(string $username, ?array $paginationState = null): array {
+        $username = ltrim($username, '@');
+        $videos = [];
+        $nextState = null;
+        $hasMore = false;
+
+        if ($paginationState === null) {
+            // Page 1: Initial web load
+            $ch = curl_init("https://urlebird.com/user/{$username}/");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $this->httpTimeout,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_USERAGENT => self::USER_AGENT
+            ]);
+            $html = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            if ($code === 200 && $html) {
+                preg_match_all('/https:\/\/urlebird\.com\/video\/([a-zA-Z0-9_-]+)-([0-9]{15,25})\//i', $html, $matches, PREG_SET_ORDER);
+                $seen = [];
+                foreach ($matches as $m) {
+                    $vid = $m[2];
+                    if (!isset($seen[$vid])) {
+                        $seen[$vid] = true;
+                        $videos[] = [
+                            'id' => $vid,
+                            'title' => trim(str_replace('-', ' ', $m[1])),
+                            'url' => "https://www.tiktok.com/@{$username}/video/{$vid}"
+                        ];
+                    }
+                }
+
+                // Extract load_more button attributes
+                if (preg_match('/<button[^>]*id="load_more"[^>]*>/i', $html, $btnMatch)) {
+                    $btn = $btnMatch[0];
+                    preg_match('/data-user-id="([^"]*)"/i', $btn, $uidM);
+                    preg_match('/data-sec-uid="([^"]*)"/i', $btn, $secM);
+                    preg_match('/data-cursor="([^"]*)"/i', $btn, $curM);
+                    preg_match('/data-x="([^"]*)"/i', $btn, $xM);
+                    preg_match('/data-page="([^"]*)"/i', $btn, $pageM);
+
+                    if (!empty($curM[1])) {
+                        $hasMore = true;
+                        $nextState = [
+                            'user_id' => $uidM[1] ?? '',
+                            'sec_uid' => $secM[1] ?? '',
+                            'cursor' => $curM[1] ?? '',
+                            'lang' => '',
+                            'page' => $pageM[1] ?? '2',
+                            'x' => $xM[1] ?? ''
+                        ];
+                    }
+                }
+            }
+        } else {
+            // Page 2+: AJAX load more
+            $ch = curl_init('https://urlebird.com/ajax/');
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => http_build_query([
+                    'action' => 'user',
+                    'data' => json_encode($paginationState)
+                ]),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $this->httpTimeout,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_USERAGENT => self::USER_AGENT,
+                CURLOPT_HTTPHEADER => [
+                    'X-Requested-With: XMLHttpRequest',
+                    'Referer: https://urlebird.com/user/' . $username . '/'
+                ]
+            ]);
+            $res = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            if ($code === 200 && $res) {
+                $data = json_decode($res, true);
+                if (!empty($data['thumbs'])) {
+                    preg_match_all('/https:\/\/urlebird\.com\/video\/([a-zA-Z0-9_-]+)-([0-9]{15,25})\//i', $data['thumbs'], $matches, PREG_SET_ORDER);
+                    $seen = [];
+                    foreach ($matches as $m) {
+                        $vid = $m[2];
+                        if (!isset($seen[$vid])) {
+                            $seen[$vid] = true;
+                            $videos[] = [
+                                'id' => $vid,
+                                'title' => trim(str_replace('-', ' ', $m[1])),
+                                'url' => "https://www.tiktok.com/@{$username}/video/{$vid}"
+                            ];
+                        }
+                    }
+
+                    $hasMore = !empty($data['has_more']);
+                    if ($hasMore && !empty($data['cursor'])) {
+                        $nextState = [
+                            'user_id' => $data['u'] ?? ($paginationState['user_id'] ?? ''),
+                            'sec_uid' => $data['s'] ?? ($paginationState['sec_uid'] ?? ''),
+                            'cursor' => $data['cursor'] ?? '',
+                            'lang' => '',
+                            'page' => (string)($data['page'] ?? ((int)($paginationState['page'] ?? 2) + 1)),
+                            'x' => $data['x'] ?? ($paginationState['x'] ?? '')
+                        ];
+                    }
+                }
+            }
+        }
+
+        return [
+            'videos' => $videos,
+            'has_more' => $hasMore,
+            'pagination_state' => $nextState
+        ];
+    }
+
+    /**
      * Resolves TikTok video metadata, download links (watermark-free), audio, and images.
      */
     public function getVideoInfo(string $url, ?string $id = null, string $user = 'TikTok'): ?array {
