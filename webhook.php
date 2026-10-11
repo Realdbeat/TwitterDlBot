@@ -76,11 +76,12 @@ $updateId = $update['update_id'] ?? null;
 $fromUser = $update['message']['from']['username'] 
     ?? $update['message']['from']['first_name'] 
     ?? $update['callback_query']['from']['username'] 
+    ?? $update['pre_checkout_query']['from']['username']
     ?? 'Unknown';
 $textPreview = $update['message']['text'] 
     ?? $update['message']['caption'] 
     ?? $update['callback_query']['data'] 
-    ?? '[Media/Other]';
+    ?? (isset($update['pre_checkout_query']) ? '[PreCheckoutQuery]' : '[Media/Other]');
 
 Logger::info('webhook', "Incoming update #{$updateId} from @{$fromUser}: {$textPreview}", [
     'update_id' => $updateId,

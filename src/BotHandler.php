@@ -31,6 +31,12 @@ class BotHandler {
      * Handles a single update received from Telegram.
      */
     public function handleUpdate(array $update): void {
+        // Handle Pre-Checkout Query (Telegram Stars payment validation)
+        if (isset($update['pre_checkout_query'])) {
+            $this->handlePreCheckoutQuery($update['pre_checkout_query']);
+            return;
+        }
+
         // Handle Callback Query (inline buttons)
         if (isset($update['callback_query'])) {
             $this->handleCallbackQuery($update['callback_query']);
@@ -49,22 +55,78 @@ class BotHandler {
      */
     private function handleMessage(array $message): void {
         $chatId = $message['chat']['id'] ?? null;
+        $userId = $message['from']['id'] ?? $chatId;
+        $fromUser = $message['from']['username'] ?? null;
+        $firstName = $message['from']['first_name'] ?? 'Friend';
         $text = trim($message['text'] ?? $message['caption'] ?? '');
         $isPrivate = ($message['chat']['type'] ?? '') === 'private';
 
-        if (!$chatId || $text === '') {
+        if (!$chatId) {
+            return;
+        }
+
+        // Keep track of user in database
+        if ($userId) {
+            $this->db->upsertUser($userId, $chatId, $fromUser, $firstName);
+        }
+
+        // Handle successful payment of Telegram Stars
+        if (isset($message['successful_payment'])) {
+            $this->handleSuccessfulPayment($message);
+            return;
+        }
+
+        if ($text === '') {
             return;
         }
 
         // Handle slash commands
         if (str_starts_with($text, '/')) {
-            $command = strtolower(explode(' ', $text)[0]);
+            $parts = explode(' ', $text, 2);
+            $command = strtolower($parts[0]);
             // Strip @botusername from command
             $command = explode('@', $command)[0];
+            $param = trim($parts[1] ?? '');
 
             switch ($command) {
                 case '/start':
-                    $this->sendStartMessage($chatId, $message['from']['first_name'] ?? 'Friend');
+                    if ($param !== '' && str_starts_with($param, 'ref_')) {
+                        $referrerId = substr($param, 4);
+                        $refResult = $this->db->processReferral($userId, $chatId, $referrerId, $fromUser, $firstName);
+                        if ($refResult !== null) {
+                            $refUntil = date('Y-m-d H:i', $refResult['new_premium_until']);
+                            $this->bot->sendMessage(
+                                $refResult['referrer_chat_id'],
+                                "🎉 <b>New Referral!</b>\n\n" .
+                                "A new user joined using your personal invite link!\n" .
+                                "🎁 <b>+1 Day of Ad-Free Premium</b> has been added to your account!\n\n" .
+                                "⭐ Active Until: <b>{$refUntil} UTC</b>\n" .
+                                "👥 Total Referrals: <b>{$refResult['referral_count']}</b>"
+                            );
+
+                            $this->sendStartMessage($chatId, $firstName, true);
+                            return;
+                        }
+                    }
+                    $this->sendStartMessage($chatId, $firstName);
+                    return;
+
+                case '/premium':
+                case '/subscribe':
+                case '/stars':
+                    $this->sendPremiumMenu($chatId, $userId);
+                    return;
+
+                case '/ref':
+                case '/referral':
+                case '/invite':
+                    $this->sendReferralMenu($chatId, $userId);
+                    return;
+
+                case '/status':
+                case '/myplan':
+                case '/plan':
+                    $this->sendStatusMenu($chatId, $userId);
                     return;
 
                 case '/help':
@@ -80,7 +142,6 @@ class BotHandler {
         // 1. Check if user sent a TikTok profile page link (e.g., https://www.tiktok.com/@username)
         $profileUsername = $this->tiktokDownloader->extractProfileUsername($text);
         if ($profileUsername !== null) {
-            $userId = $message['from']['id'] ?? $chatId;
             $this->processTikTokProfilePage($chatId, $userId, $profileUsername, $message['message_id'] ?? null);
             return;
         }
@@ -99,7 +160,7 @@ class BotHandler {
                     "• <code>https://www.tiktok.com/@username/video/1234567890</code>\n" .
                     "• <code>https://www.tiktok.com/@username</code> (Download creator's videos)\n" .
                     "• <code>https://vm.tiktok.com/ZMxxxxxx/</code>\n\n" .
-                    "Type /help for instructions.",
+                    "Type /help for instructions, /premium for ad-free plans, or /ref to earn free days!",
                     [
                         'reply_to_message_id' => $message['message_id'] ?? null
                     ]
@@ -109,11 +170,15 @@ class BotHandler {
         }
 
         // Limit processing to max 3 links each to prevent abuse
+        $isPremium = $this->db->isUserPremium($userId);
+
         if (!empty($tweetLinks)) {
             $tweetLinks = array_slice($tweetLinks, 0, 3);
             foreach ($tweetLinks as $item) {
-                if ($this->isAdEnabled()) {
-                    $this->queueTweetForAd($chatId, $message['from']['id'] ?? $chatId, $item, $message['message_id'] ?? null);
+                if ($isPremium) {
+                    $this->processTweetLink($chatId, $item, $message['message_id'] ?? null);
+                } elseif ($this->isAdEnabled()) {
+                    $this->queueTweetForAd($chatId, $userId, $item, $message['message_id'] ?? null);
                 } else {
                     $this->processTweetLink($chatId, $item, $message['message_id'] ?? null);
                 }
@@ -123,8 +188,10 @@ class BotHandler {
         if (!empty($tiktokLinks)) {
             $tiktokLinks = array_slice($tiktokLinks, 0, 3);
             foreach ($tiktokLinks as $item) {
-                if ($this->isAdEnabled()) {
-                    $this->queueTikTokForAd($chatId, $message['from']['id'] ?? $chatId, $item, $message['message_id'] ?? null);
+                if ($isPremium) {
+                    $this->processTikTokLink($chatId, $item, $message['message_id'] ?? null);
+                } elseif ($this->isAdEnabled()) {
+                    $this->queueTikTokForAd($chatId, $userId, $item, $message['message_id'] ?? null);
                 } else {
                     $this->processTikTokLink($chatId, $item, $message['message_id'] ?? null);
                 }
@@ -507,16 +574,27 @@ class BotHandler {
     /**
      * Send /start welcome message.
      */
-    private function sendStartMessage(int|string $chatId, string $name): void {
-        $text = "👋 <b>Hello, " . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . "!</b>\n\n" .
+    private function sendStartMessage(int|string $chatId, string $name, bool $wasReferred = false): void {
+        $prefix = $wasReferred 
+            ? "🎁 <b>You were invited by a friend!</b> +1 Day of Ad-Free Premium was credited to their account!\n\n"
+            : "";
+
+        $text = "{$prefix}👋 <b>Hello, " . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . "!</b>\n\n" .
             "I am your <b>Twitter (X) & TikTok Video Downloader Bot</b>.\n\n" .
-            "🚀 <b>How it works:</b>\n" .
-            "1. Send any video link from <b>Twitter / X</b> or <b>TikTok</b> to get the watermark-free video!\n" .
-            "2. Or send a <b>TikTok Profile link</b> (e.g. <code>https://www.tiktok.com/@username</code>) to download all videos from their page (10 at a time)!\n\n" .
-            "💡 <i>Try sending a link now!</i>";
+            "🚀 <b>Features:</b>\n" .
+            "• 🎬 Watermark-free HD video downloads\n" .
+            "• 🎵 Instant MP3 audio extraction\n" .
+            "• 📥 TikTok creator profile bulk downloading\n" .
+            "• ⭐ <b>Ad-Free Downloads</b> via Telegram Stars (/premium)\n" .
+            "• 🎁 <b>Free Premium Days:</b> Earn 1 day of ad-free downloads per friend invited (/ref)!\n\n" .
+            "💡 <i>Send any Twitter or TikTok link now to download!</i>";
 
         $keyboard = [
             'inline_keyboard' => [
+                [
+                    ['text' => '⭐ Premium (Ad-Free)', 'callback_data' => 'show_plans'],
+                    ['text' => '🎁 Earn Free Premium', 'callback_data' => 'show_ref']
+                ],
                 [
                     ['text' => '📖 How to Use', 'callback_data' => 'help'],
                     ['text' => 'ℹ️ About', 'callback_data' => 'about']
@@ -537,24 +615,31 @@ class BotHandler {
             "<b>Supported link formats:</b>\n\n" .
             "<b>Twitter / X:</b>\n" .
             "• <code>https://x.com/username/status/1234567890</code>\n" .
-            "• <code>https://twitter.com/username/status/1234567890</code>\n" .
-            "• <code>https://mobile.twitter.com/...</code>\n" .
-            "• <code>https://fxtwitter.com/...</code> or <code>fixupx.com/...</code>\n\n" .
+            "• <code>https://twitter.com/username/status/1234567890</code>\n\n" .
             "<b>TikTok:</b>\n" .
             "• <code>https://www.tiktok.com/@username/video/1234567890</code>\n" .
             "• <code>https://vm.tiktok.com/xxxxxx/</code> or <code>vt.tiktok.com/xxxxxx/</code>\n" .
             "• <code>https://www.tiktok.com/@username/photo/1234567890</code> (photo slideshows)\n" .
             "• <code>https://www.tiktok.com/@username</code> (Creator profile: download all videos)\n\n" .
-            "<b>Features:</b>\n" .
-            "• 📥 <b>Profile Bulk Downloader:</b> Shows total videos, asks permission, and downloads 10 videos at a time with a 'Next' button!\n" .
-            "• ✨ Automatic HD quality & watermark-free\n" .
-            "• 🎵 One-tap background audio / MP3 download\n" .
-            "• 🎥 Video and animated GIF support\n" .
-            "• ⚡ Fast streaming delivery\n" .
-            "• 🆓 Completely free to use\n\n" .
+            "<b>⭐ Subscriptions & Referrals:</b>\n" .
+            "• <b>/premium</b>: Upgrade with Telegram Stars for ad-free downloads\n" .
+            "  - 7 Days: ⭐ 100 Stars\n" .
+            "  - 1 Month: ⭐ 350 Stars\n" .
+            "  - 1 Year: ⭐ 2,000 Stars\n" .
+            "• <b>/ref</b>: Share your personal referral link and get <b>+1 Day of Free Premium</b> for each invited friend!\n" .
+            "• <b>/status</b>: View your active subscription expiration and referral stats.\n\n" .
             "<i>Note: Content from private or protected accounts cannot be downloaded.</i>";
 
-        $this->bot->sendMessage($chatId, $text);
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '⭐ View Premium Plans', 'callback_data' => 'show_plans'],
+                    ['text' => '🎁 Referral Program', 'callback_data' => 'show_ref']
+                ]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $text, ['reply_markup' => $keyboard]);
     }
 
     /**
@@ -838,10 +923,24 @@ class BotHandler {
 
         $this->bot->answerCallbackQuery($id);
 
+        $userId = $callback['from']['id'] ?? $chatId;
+
         if ($data === 'help') {
             $this->sendHelpMessage($chatId);
         } elseif ($data === 'about') {
             $this->sendAboutMessage($chatId);
+        } elseif ($data === 'show_plans') {
+            $this->sendPremiumMenu($chatId, $userId);
+        } elseif ($data === 'show_ref') {
+            $this->sendReferralMenu($chatId, $userId);
+        } elseif ($data === 'status') {
+            $this->sendStatusMenu($chatId, $userId);
+        } elseif ($data === 'buy_sub:7d') {
+            $this->sendStarsInvoice($chatId, '7d');
+        } elseif ($data === 'buy_sub:30d') {
+            $this->sendStarsInvoice($chatId, '30d');
+        } elseif ($data === 'buy_sub:365d') {
+            $this->sendStarsInvoice($chatId, '365d');
         } elseif (str_starts_with($data, 'tt_aud:')) {
             $audioId = substr($data, 7);
             $cacheFile = rtrim($this->config['temp_dir'], '/\\') . DIRECTORY_SEPARATOR . "tt_aud_{$audioId}.json";
@@ -878,6 +977,243 @@ class BotHandler {
                 $this->bot->editMessageText($chatId, $callback['message']['message_id'], "❌ <i>Download cancelled.</i>");
             }
         }
+    }
+
+    /**
+     * Send Telegram Stars invoice for a premium subscription.
+     */
+    public function sendStarsInvoice(int|string $chatId, string $planKey): void {
+        $plans = [
+            '7d' => [
+                'title' => '⭐ 7 Days Ad-Free Premium',
+                'description' => 'Unlock 7 days of instant Twitter/X and TikTok video downloads with zero ads!',
+                'payload' => 'sub_7d',
+                'amount' => 100
+            ],
+            '30d' => [
+                'title' => '⭐ 1 Month Ad-Free Premium',
+                'description' => 'Unlock 30 days of instant Twitter/X and TikTok video downloads with zero ads!',
+                'payload' => 'sub_30d',
+                'amount' => 350
+            ],
+            '365d' => [
+                'title' => '⭐ 1 Year Ad-Free Premium',
+                'description' => 'Unlock 365 days of instant Twitter/X and TikTok video downloads with zero ads!',
+                'payload' => 'sub_365d',
+                'amount' => 2000
+            ]
+        ];
+
+        $plan = $plans[$planKey] ?? null;
+        if (!$plan) {
+            return;
+        }
+
+        $this->bot->sendInvoice(
+            $chatId,
+            $plan['title'],
+            $plan['description'],
+            $plan['payload'],
+            'XTR',
+            [
+                ['label' => $plan['title'], 'amount' => $plan['amount']]
+            ]
+        );
+    }
+
+    /**
+     * Respond to a pre-checkout query before charging Telegram Stars.
+     */
+    public function handlePreCheckoutQuery(array $query): void {
+        $id = $query['id'] ?? '';
+        $currency = $query['currency'] ?? '';
+        $payload = $query['invoice_payload'] ?? '';
+
+        Logger::info('payment', "Pre-checkout query received for payload: {$payload}", [
+            'query_id' => $id,
+            'currency' => $currency
+        ]);
+
+        if ($currency === 'XTR' && in_array($payload, ['sub_7d', 'sub_30d', 'sub_365d'], true)) {
+            $this->bot->answerPreCheckoutQuery($id, true);
+        } else {
+            $this->bot->answerPreCheckoutQuery($id, false, "Invalid invoice configuration.");
+        }
+    }
+
+    /**
+     * Handles successful Telegram Stars payment.
+     */
+    public function handleSuccessfulPayment(array $message): void {
+        $payment = $message['successful_payment'] ?? [];
+        $chatId = $message['chat']['id'] ?? '';
+        $userId = $message['from']['id'] ?? $chatId;
+        $payload = $payment['invoice_payload'] ?? '';
+        $totalAmount = (int)($payment['total_amount'] ?? 0);
+        $currency = $payment['currency'] ?? 'XTR';
+        $chargeId = $payment['telegram_payment_charge_id'] ?? '';
+        $providerChargeId = $payment['provider_payment_charge_id'] ?? '';
+
+        $days = match ($payload) {
+            'sub_7d' => 7,
+            'sub_30d' => 30,
+            'sub_365d' => 365,
+            default => 0
+        };
+
+        if ($days <= 0) {
+            Logger::error('payment', "Unknown invoice payload received: {$payload}", ['payment' => $payment]);
+            return;
+        }
+
+        $newUntil = $this->db->recordPayment(
+            $userId,
+            $chatId,
+            $chargeId,
+            $providerChargeId,
+            $payload,
+            $currency,
+            $totalAmount,
+            $days
+        );
+
+        $formattedDate = date('Y-m-d H:i', $newUntil);
+
+        Logger::success('payment', "Successful Stars payment by user {$userId}: {$totalAmount} {$currency} for {$days} days", [
+            'new_until' => $newUntil
+        ]);
+
+        $text = "🎉 <b>Payment Successful! Premium Activated!</b>\n\n" .
+                "Thank you for your purchase of <b>⭐ {$totalAmount} Telegram Stars</b>!\n\n" .
+                "✨ <b>Your Premium Benefits:</b>\n" .
+                "• 🚫 <b>Zero Ads:</b> All video downloads will be processed instantly without ads\n" .
+                "• ⚡ <b>Top Speed:</b> Instant media streaming directly to chat\n" .
+                "• 📅 <b>Active Until:</b> <b>{$formattedDate} UTC</b>\n\n" .
+                "🚀 <i>Send any Twitter / X or TikTok link now to enjoy ad-free downloads!</i>";
+
+        $this->bot->sendMessage($chatId, $text);
+    }
+
+    /**
+     * Send Premium subscription plans menu.
+     */
+    public function sendPremiumMenu(int|string $chatId, int|string $userId): void {
+        $isPrem = $this->db->isUserPremium($userId);
+        $user = $this->db->getUser($userId);
+        $premUntil = !empty($user['premium_until']) ? (int)$user['premium_until'] : 0;
+
+        $statusText = $isPrem 
+            ? "✅ <b>Active until:</b> " . date('Y-m-d H:i', $premUntil) . " UTC"
+            : "❌ <b>Status:</b> Free Tier (Ads enabled)";
+
+        $text = "⭐ <b>Telegram Premium Subscription (Ad-Free Downloads)</b>\n\n" .
+                "Upgrade your account with <b>Telegram Stars</b> to download Twitter/X and TikTok videos instantly with <b>zero ads</b>!\n\n" .
+                "📊 <b>Your Current Plan:</b>\n" .
+                "{$statusText}\n\n" .
+                "🌟 <b>Available Subscription Plans:</b>\n" .
+                "• <b>7 Days:</b> ⭐ 100 Stars\n" .
+                "• <b>1 Month (30 Days):</b> ⭐ 350 Stars\n" .
+                "• <b>1 Year (365 Days):</b> ⭐ 2,000 Stars\n\n" .
+                "💡 <i>Tap a button below to choose a plan and pay with Telegram Stars:</i>";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '⭐ 7 Days (100 Stars)', 'callback_data' => 'buy_sub:7d']
+                ],
+                [
+                    ['text' => '⭐ 1 Month (350 Stars)', 'callback_data' => 'buy_sub:30d']
+                ],
+                [
+                    ['text' => '⭐ 1 Year (2,000 Stars)', 'callback_data' => 'buy_sub:365d']
+                ],
+                [
+                    ['text' => '🎁 Earn Free Premium (Referrals)', 'callback_data' => 'show_ref']
+                ]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $text, ['reply_markup' => $keyboard]);
+    }
+
+    /**
+     * Send Referral menu with unique invite link.
+     */
+    public function sendReferralMenu(int|string $chatId, int|string $userId): void {
+        $user = $this->db->getUser($userId);
+        $referralCount = (int)($user['referral_count'] ?? 0);
+        $isPrem = $this->db->isUserPremium($userId);
+        $premUntil = !empty($user['premium_until']) ? (int)$user['premium_until'] : 0;
+
+        $me = $this->bot->getMe();
+        $botUsername = $me['result']['username'] ?? 'TwitterDlBot';
+        $refLink = "https://t.me/{$botUsername}?start=ref_{$userId}";
+
+        $statusLine = $isPrem 
+            ? "⭐ <b>Premium Active Until:</b> " . date('Y-m-d H:i', $premUntil) . " UTC"
+            : "ℹ️ <b>Premium Status:</b> Inactive (Invite friends to get free days!)";
+
+        $text = "👥 <b>Referral Program — Earn Free Premium!</b>\n\n" .
+                "Invite your friends to use this bot and get <b>+1 Day of Ad-Free Premium</b> for <b>EVERY</b> friend who joins!\n\n" .
+                "🎁 <b>How it works:</b>\n" .
+                "• 1 Friend = +1 Day Ad-Free\n" .
+                "• 10 Friends = +10 Days Ad-Free\n" .
+                "• 100 Friends = +100 Days Ad-Free!\n\n" .
+                "📊 <b>Your Statistics:</b>\n" .
+                "• Total Friends Invited: <b>{$referralCount}</b>\n" .
+                "• {$statusLine}\n\n" .
+                "🔗 <b>Your Personal Invite Link:</b>\n" .
+                "<code>{$refLink}</code>\n\n" .
+                "👇 <i>Share your link with friends or groups to start earning free premium:</i>";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '📤 Share Referral Link', 'url' => "https://t.me/share/url?url=" . urlencode($refLink) . "&text=" . urlencode("🎬 Fast Twitter & TikTok Video Downloader Bot without watermark!")]
+                ],
+                [
+                    ['text' => '⭐ View Premium Plans', 'callback_data' => 'show_plans']
+                ]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $text, ['reply_markup' => $keyboard]);
+    }
+
+    /**
+     * Send Status menu showing plan expiration and stats.
+     */
+    public function sendStatusMenu(int|string $chatId, int|string $userId): void {
+        $user = $this->db->getUser($userId);
+        $referralCount = (int)($user['referral_count'] ?? 0);
+        $isPrem = $this->db->isUserPremium($userId);
+        $premUntil = !empty($user['premium_until']) ? (int)$user['premium_until'] : 0;
+
+        if ($isPrem) {
+            $formattedDate = date('Y-m-d H:i:s', $premUntil);
+            $remainingHours = round(($premUntil - time()) / 3600, 1);
+            $text = "⭐ <b>Your Subscription Status: Active Premium</b>\n\n" .
+                    "• <b>Status:</b> Premium (Ad-Free Active)\n" .
+                    "• <b>Expires:</b> {$formattedDate} UTC ({$remainingHours}h remaining)\n" .
+                    "• <b>Total Referrals:</b> {$referralCount} users invited\n\n" .
+                    "All your Twitter / X and TikTok video downloads will download instantly without ads!";
+        } else {
+            $text = "ℹ️ <b>Your Subscription Status: Free Tier</b>\n\n" .
+                    "• <b>Status:</b> Free (Sponsored ads enabled)\n" .
+                    "• <b>Total Referrals:</b> {$referralCount} users invited\n\n" .
+                    "💡 <i>Tip: Want ad-free downloads? Upgrade via Telegram Stars (/premium) or invite friends to get free days (/ref)!</i>";
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '⭐ Subscription Plans', 'callback_data' => 'show_plans'],
+                    ['text' => '🎁 Referral Program', 'callback_data' => 'show_ref']
+                ]
+            ]
+        ];
+
+        $this->bot->sendMessage($chatId, $text, ['reply_markup' => $keyboard]);
     }
 
     /**
@@ -927,6 +1263,7 @@ class BotHandler {
         $authorExcerpt = !empty($item['user']) ? " from @{$item['user']}" : "";
         $text = "🎬 <b>Video Ready to Download!</b>{$authorExcerpt}\n\n" .
                 "To support our free bot and unlock your video, please watch a quick sponsored ad.\n\n" .
+                "💡 <i>Don't want ads? Upgrade to ⭐ Premium (/premium) or invite friends for free days (/ref)!</i>\n\n" .
                 "👇 <b>Tap the button below to watch the ad & get your video:</b>";
 
         $isHttps = str_starts_with($baseUrl, 'https://');
@@ -942,6 +1279,9 @@ class BotHandler {
         $keyboard = [
             'inline_keyboard' => [
                 [$watchButton],
+                [
+                    ['text' => '⭐ Skip Ads with Premium', 'callback_data' => 'show_plans']
+                ],
                 [
                     ['text' => '🌐 Open on X', 'url' => $item['url']]
                 ]
@@ -971,6 +1311,7 @@ class BotHandler {
         $userExcerpt = !empty($item['user']) ? " from @{$item['user']}" : "";
         $text = "🎬 <b>TikTok Video Ready!</b>{$userExcerpt}\n\n" .
                 "To support our free bot and unlock your watermark-free video, please watch a quick sponsored ad.\n\n" .
+                "💡 <i>Don't want ads? Upgrade to ⭐ Premium (/premium) or invite friends for free days (/ref)!</i>\n\n" .
                 "👇 <b>Tap the button below to watch the ad & get your video:</b>";
 
         $isHttps = str_starts_with($baseUrl, 'https://');
@@ -986,6 +1327,9 @@ class BotHandler {
         $keyboard = [
             'inline_keyboard' => [
                 [$watchButton],
+                [
+                    ['text' => '⭐ Skip Ads with Premium', 'callback_data' => 'show_plans']
+                ],
                 [
                     ['text' => '🌐 Open on TikTok', 'url' => $item['url']]
                 ]

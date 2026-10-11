@@ -196,6 +196,47 @@ class TelegramBot {
     }
 
     /**
+     * Send an invoice for Telegram Stars payments.
+     */
+    public function sendInvoice(
+        int|string $chatId,
+        string $title,
+        string $description,
+        string $payload,
+        string $currency,
+        array $prices,
+        array $options = []
+    ): array {
+        $params = array_merge([
+            'chat_id' => $chatId,
+            'title' => $title,
+            'description' => $description,
+            'payload' => $payload,
+            'currency' => $currency,
+            'prices' => $prices,
+            'provider_token' => '' // Empty string for Telegram Stars (XTR)
+        ], $options);
+
+        return $this->request('sendInvoice', $params);
+    }
+
+    /**
+     * Respond to a pre-checkout query.
+     */
+    public function answerPreCheckoutQuery(string $preCheckoutQueryId, bool $ok, ?string $errorMessage = null): array {
+        $params = [
+            'pre_checkout_query_id' => $preCheckoutQueryId,
+            'ok' => $ok
+        ];
+
+        if (!$ok && $errorMessage !== null) {
+            $params['error_message'] = $errorMessage;
+        }
+
+        return $this->request('answerPreCheckoutQuery', $params);
+    }
+
+    /**
      * Answer an incoming callback query.
      */
     public function answerCallbackQuery(string $callbackQueryId, array $options = []): array {
@@ -214,7 +255,7 @@ class TelegramBot {
             'offset' => $offset,
             'limit' => $limit,
             'timeout' => $timeout,
-            'allowed_updates' => ['message', 'callback_query']
+            'allowed_updates' => ['message', 'callback_query', 'pre_checkout_query']
         ]);
     }
 
@@ -224,7 +265,7 @@ class TelegramBot {
     public function setWebhook(string $url, array $options = []): array {
         $params = array_merge([
             'url' => $url,
-            'allowed_updates' => ['message', 'callback_query']
+            'allowed_updates' => ['message', 'callback_query', 'pre_checkout_query']
         ], $options);
 
         return $this->request('setWebhook', $params);

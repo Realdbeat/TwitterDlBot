@@ -406,6 +406,43 @@ https://xdlbot.mossubyte.com.ng/monetag_postback.php?token={ymid}&status={reward
 
 ---
 
+## ⭐ Telegram Stars Subscriptions (Ad-Free Downloads)
+
+Users can subscribe using **Telegram Stars (`XTR`)** to completely bypass Monetag ads and enjoy instant, uninterrupted downloads.
+
+### 🌟 Available Plans
+| Plan | Telegram Stars | Duration | Benefit |
+| :--- | :--- | :--- | :--- |
+| **Weekly** | ⭐ **100 Stars** | 7 Days | 100% Ad-Free Video Downloads |
+| **Monthly** | ⭐ **350 Stars** | 30 Days (1 Month) | 100% Ad-Free Video Downloads |
+| **Yearly** | ⭐ **2,000 Stars** | 365 Days (1 Year) | 100% Ad-Free Video Downloads |
+
+- When a subscribed user sends a Twitter / X or TikTok link, the bot recognizes their active status and sends the video **immediately without showing any ad buttons**.
+- Subscriptions are purchased directly within Telegram using native **Telegram Stars Invoices** (`sendInvoice` with `currency='XTR'`). No payment gateway or merchant account is required!
+
+---
+
+## 👥 Referral Program (Earn Free Premium Days)
+
+Every user has their own unique personal invite link:
+```
+https://t.me/YourBotUsername?start=ref_<USER_ID>
+```
+
+- **+1 Day of Ad-Free Premium per Referral**: Every time a new user joins using someone's invite link, the referrer automatically receives **+1 full day of Ad-Free Premium**!
+- **Stackable Days**:
+  - Invite 10 friends = **10 Days** of Ad-Free Downloads!
+  - Invite 100 friends = **100 Days** of Ad-Free Downloads!
+- **Real-Time Notification**: As soon as a friend joins, the bot notifies the referrer:
+  > 🎉 **New Referral!**  
+  > A new user joined using your personal invite link!  
+  > 🎁 **+1 Day of Ad-Free Premium** has been added to your account!  
+  > ⭐ Active Until: **YYYY-MM-DD HH:MM UTC**  
+  > 👥 Total Referrals: **X**
+- Users can check their stats or share their link anytime using `/ref` or `/status`.
+
+---
+
 ## 📄 License
 
 MIT License. Free to use and modify for personal or commercial projects.

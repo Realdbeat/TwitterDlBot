@@ -149,6 +149,10 @@ try {
                     $from = $update['callback_query']['from']['username'] ?? 'User';
                     $data = $update['callback_query']['data'] ?? '';
                     logInfo("Callback from @{$from}: {$data}");
+                } elseif (isset($update['pre_checkout_query'])) {
+                    $from = $update['pre_checkout_query']['from']['username'] ?? 'User';
+                    $amount = $update['pre_checkout_query']['total_amount'] ?? 0;
+                    logInfo("Pre-checkout query from @{$from}: {$amount} Stars");
                 }
 
                 // Handle update
