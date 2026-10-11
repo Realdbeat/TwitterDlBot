@@ -358,6 +358,55 @@ php bot.php
 
 ---
 
+## 💰 Monetag Rewarded Interstitial Integration (Telegram Mini App)
+
+The bot includes built-in integration with **[Monetag Rewarded Interstitial SDK for Telegram Mini Apps (TMA)](https://docs.monetag.com/docs/ad-integration/rewarded-interstitial/)**.
+
+### 🔄 How It Works
+1. **User sends a Twitter / TikTok video link**: Instead of sending the video immediately, the bot creates a secure pending request and replies with an inline button:
+   ```
+   🎬 Video Ready to Download!
+   To support our free bot and unlock your video, please watch a quick sponsored ad.
+   [🎁 Watch Ad to Unlock Video 🎬]
+   ```
+2. **User taps the button**: Telegram opens the built-in **Telegram Mini App (`ad.php`)**.
+3. **Mini App preloads and plays the Monetag Rewarded Interstitial ad**:
+   - Uses the official Telegram WebApp SDK (`Telegram.WebApp.ready()`, `expand()`).
+   - Preloads the ad via Monetag SDK: `window.show_XXX({ type: 'preload', ymid: token })`.
+   - When the user watches and completes the ad, the Monetag promise resolves (`show_XXX({ ymid: token }).then(...)`).
+4. **Instant Unlock & Delivery**:
+   - The Mini App notifies `/ad_claim.php`, which triggers video downloading and directly sends the video to the user's Telegram chat.
+   - The Mini App plays a celebration animation and automatically closes via `Telegram.WebApp.close()`, returning the user back to Telegram with their video ready to play!
+
+### ⚙️ How to Configure Monetag in `.env`
+Add these settings to your [`.env`](file:///c:/Users/OnlyGods/CodeBases/TwitterDlBot/.env) file:
+
+```env
+# Enable or disable Monetag ads (true/false)
+MONETAG_ENABLED="true"
+
+# Your Monetag Zone ID for Rewarded Interstitial (from Monetag Dashboard)
+MONETAG_ZONE_ID="1234567"
+
+# Optional: Custom SDK URL provided by Monetag (if different from default)
+MONETAG_SDK_URL="https://alwingulla.com/88/tag.min.js"
+
+# Optional: Base URL of your Mini App (e.g. https://xdlbot.mossubyte.com.ng)
+# If left empty, it will be automatically derived from WEBHOOK_URL
+MINI_APP_URL="https://xdlbot.mossubyte.com.ng"
+```
+
+> **Note**: If `MONETAG_ZONE_ID` is left empty or `MONETAG_ENABLED=false`, the bot seamlessly bypasses ads and directly delivers videos as usual.
+
+### 🌐 Optional Server-to-Server Postback
+If you configure Monetag S2S Postbacks in your Monetag Dashboard, set your postback URL to:
+```text
+https://xdlbot.mossubyte.com.ng/monetag_postback.php?token={ymid}&status={reward_event_type}&zone={zone_id}&price={estimated_price}
+```
+
+---
+
 ## 📄 License
 
 MIT License. Free to use and modify for personal or commercial projects.
+

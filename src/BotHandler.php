@@ -112,14 +112,22 @@ class BotHandler {
         if (!empty($tweetLinks)) {
             $tweetLinks = array_slice($tweetLinks, 0, 3);
             foreach ($tweetLinks as $item) {
-                $this->processTweetLink($chatId, $item, $message['message_id'] ?? null);
+                if ($this->isAdEnabled()) {
+                    $this->queueTweetForAd($chatId, $message['from']['id'] ?? $chatId, $item, $message['message_id'] ?? null);
+                } else {
+                    $this->processTweetLink($chatId, $item, $message['message_id'] ?? null);
+                }
             }
         }
 
         if (!empty($tiktokLinks)) {
             $tiktokLinks = array_slice($tiktokLinks, 0, 3);
             foreach ($tiktokLinks as $item) {
-                $this->processTikTokLink($chatId, $item, $message['message_id'] ?? null);
+                if ($this->isAdEnabled()) {
+                    $this->queueTikTokForAd($chatId, $message['from']['id'] ?? $chatId, $item, $message['message_id'] ?? null);
+                } else {
+                    $this->processTikTokLink($chatId, $item, $message['message_id'] ?? null);
+                }
             }
         }
     }
@@ -127,7 +135,7 @@ class BotHandler {
     /**
      * Process a single tweet link.
      */
-    private function processTweetLink(int|string $chatId, array $item, ?int $replyToId): void {
+    public function processTweetLink(int|string $chatId, array $item, ?int $replyToId): void {
         $statusMsg = $this->bot->sendMessage(
             $chatId,
             "🔍 <i>Searching for video in tweet...</i>",
@@ -273,7 +281,7 @@ class BotHandler {
     /**
      * Process a single TikTok link.
      */
-    private function processTikTokLink(int|string $chatId, array $item, ?int $replyToId): void {
+    public function processTikTokLink(int|string $chatId, array $item, ?int $replyToId): void {
         $statusMsg = $this->bot->sendMessage(
             $chatId,
             "🔍 <i>Searching for TikTok video...</i>",
@@ -869,6 +877,189 @@ class BotHandler {
             if (isset($callback['message']['message_id'])) {
                 $this->bot->editMessageText($chatId, $callback['message']['message_id'], "❌ <i>Download cancelled.</i>");
             }
+        }
+    }
+
+    /**
+     * Checks if Monetag Rewarded Interstitial ad requirement is active.
+     */
+    public function isAdEnabled(): bool {
+        return !empty($this->config['monetag_enabled']) && !empty($this->config['monetag_zone_id']);
+    }
+
+    /**
+     * Resolves the base URL for the Telegram Mini App.
+     */
+    public function getMiniAppBaseUrl(): string {
+        if (!empty($this->config['mini_app_url'])) {
+            return rtrim($this->config['mini_app_url'], '/');
+        }
+
+        if (!empty($this->config['webhook_url'])) {
+            $parsed = parse_url($this->config['webhook_url']);
+            if (!empty($parsed['scheme']) && !empty($parsed['host'])) {
+                $base = $parsed['scheme'] . '://' . $parsed['host'];
+                if (!empty($parsed['port'])) {
+                    $base .= ':' . $parsed['port'];
+                }
+                return $base;
+            }
+        }
+
+        if (!empty($_SERVER['HTTP_HOST'])) {
+            $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
+            return $scheme . '://' . $_SERVER['HTTP_HOST'];
+        }
+
+        return '';
+    }
+
+    /**
+     * Queues a tweet link to require watching a Monetag ad in TMA before delivering the video.
+     */
+    private function queueTweetForAd(int|string $chatId, int|string $userId, array $item, ?int $replyToId): void {
+        $token = bin2hex(random_bytes(16));
+        $this->db->createPendingAdDownload($token, $chatId, $userId, 'tweet', $item, $replyToId);
+
+        $baseUrl = $this->getMiniAppBaseUrl();
+        $adUrl = $baseUrl . '/ad.php?token=' . $token;
+
+        $authorExcerpt = !empty($item['user']) ? " from @{$item['user']}" : "";
+        $text = "🎬 <b>Video Ready to Download!</b>{$authorExcerpt}\n\n" .
+                "To support our free bot and unlock your video, please watch a quick sponsored ad.\n\n" .
+                "👇 <b>Tap the button below to watch the ad & get your video:</b>";
+
+        $isHttps = str_starts_with($baseUrl, 'https://');
+        $watchButton = [
+            'text' => '🎁 Watch Ad to Unlock Video 🎬',
+        ];
+        if ($isHttps) {
+            $watchButton['web_app'] = ['url' => $adUrl];
+        } else {
+            $watchButton['url'] = $adUrl;
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [$watchButton],
+                [
+                    ['text' => '🌐 Open on X', 'url' => $item['url']]
+                ]
+            ]
+        ];
+
+        $res = $this->bot->sendMessage($chatId, $text, [
+            'reply_to_message_id' => $replyToId,
+            'reply_markup' => $keyboard
+        ]);
+
+        if (!empty($res['result']['message_id'])) {
+            $this->db->updatePendingAdStatusMessage($token, (int)$res['result']['message_id']);
+        }
+    }
+
+    /**
+     * Queues a TikTok link to require watching a Monetag ad in TMA before delivering the video.
+     */
+    private function queueTikTokForAd(int|string $chatId, int|string $userId, array $item, ?int $replyToId): void {
+        $token = bin2hex(random_bytes(16));
+        $this->db->createPendingAdDownload($token, $chatId, $userId, 'tiktok', $item, $replyToId);
+
+        $baseUrl = $this->getMiniAppBaseUrl();
+        $adUrl = $baseUrl . '/ad.php?token=' . $token;
+
+        $userExcerpt = !empty($item['user']) ? " from @{$item['user']}" : "";
+        $text = "🎬 <b>TikTok Video Ready!</b>{$userExcerpt}\n\n" .
+                "To support our free bot and unlock your watermark-free video, please watch a quick sponsored ad.\n\n" .
+                "👇 <b>Tap the button below to watch the ad & get your video:</b>";
+
+        $isHttps = str_starts_with($baseUrl, 'https://');
+        $watchButton = [
+            'text' => '🎁 Watch Ad to Unlock Video 🎬',
+        ];
+        if ($isHttps) {
+            $watchButton['web_app'] = ['url' => $adUrl];
+        } else {
+            $watchButton['url'] = $adUrl;
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [$watchButton],
+                [
+                    ['text' => '🌐 Open on TikTok', 'url' => $item['url']]
+                ]
+            ]
+        ];
+
+        $res = $this->bot->sendMessage($chatId, $text, [
+            'reply_to_message_id' => $replyToId,
+            'reply_markup' => $keyboard
+        ]);
+
+        if (!empty($res['result']['message_id'])) {
+            $this->db->updatePendingAdStatusMessage($token, (int)$res['result']['message_id']);
+        }
+    }
+
+    /**
+     * Completes ad verification and delivers the requested video to the user's Telegram chat.
+     */
+    public function deliverPendingAdDownload(string $token): array {
+        $pending = $this->db->getPendingAdDownload($token);
+        if (!$pending) {
+            return ['ok' => false, 'error' => 'Invalid or expired download token'];
+        }
+
+        if ($pending['status'] === 'completed') {
+            return ['ok' => true, 'already_completed' => true, 'message' => 'Video has already been delivered!'];
+        }
+
+        if ($pending['status'] === 'processing') {
+            return ['ok' => true, 'processing' => true, 'message' => 'Video is currently being downloaded and delivered...'];
+        }
+
+        // Prevent concurrent double-deliveries
+        $this->db->updatePendingAdStatus($token, 'processing');
+
+        $chatId = $pending['chat_id'];
+        $replyToId = !empty($pending['reply_to_message_id']) ? (int)$pending['reply_to_message_id'] : null;
+        $linkData = $pending['link_data_array'];
+        $linkType = $pending['link_type'];
+        $statusMsgId = !empty($pending['status_message_id']) ? (int)$pending['status_message_id'] : null;
+
+        // If prompt message exists, update it to show progress
+        if ($statusMsgId) {
+            $this->bot->editMessageText($chatId, $statusMsgId, "🎉 <b>Ad watched!</b> Unlocking and sending your video now... ⏳");
+        }
+
+        try {
+            if ($linkType === 'tweet') {
+                $this->processTweetLink($chatId, $linkData, $replyToId);
+            } elseif ($linkType === 'tiktok') {
+                $this->processTikTokLink($chatId, $linkData, $replyToId);
+            } else {
+                $this->db->updatePendingAdStatus($token, 'failed');
+                return ['ok' => false, 'error' => 'Unsupported link type'];
+            }
+
+            $this->db->updatePendingAdStatus($token, 'completed');
+
+            // Delete the prompt message to keep chat history tidy
+            if ($statusMsgId) {
+                $this->bot->deleteMessage($chatId, $statusMsgId);
+            }
+
+            Logger::success('monetag_ad', "Delivered video for token {$token} to chat {$chatId}");
+
+            return ['ok' => true, 'message' => 'Video successfully delivered to Telegram chat!'];
+        } catch (\Throwable $e) {
+            $this->db->updatePendingAdStatus($token, 'failed');
+            Logger::error('monetag_ad', "Error delivering video for token {$token}: " . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+                'pending' => $pending
+            ]);
+            return ['ok' => false, 'error' => $e->getMessage()];
         }
     }
 }

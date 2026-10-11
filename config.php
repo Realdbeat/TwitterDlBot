@@ -56,4 +56,9 @@ return [
     'webhook_url' => env('WEBHOOK_URL', ''),
     'webhook_secret' => env('WEBHOOK_SECRET', ''),
     'log_password' => env('LOG_PASSWORD', ''),
+    // Monetag Rewarded Interstitial (TMA) Configuration
+    'monetag_enabled' => filter_var(env('MONETAG_ENABLED', 'true'), FILTER_VALIDATE_BOOLEAN),
+    'monetag_zone_id' => trim((string) env('MONETAG_ZONE_ID', '')),
+    'monetag_sdk_url' => trim((string) env('MONETAG_SDK_URL', '')),
+    'mini_app_url' => trim((string) env('MINI_APP_URL', '')),
 ];

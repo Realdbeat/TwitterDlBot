@@ -56,8 +56,24 @@ class Database {
                 FOREIGN KEY(session_id) REFERENCES tiktok_sessions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS pending_ad_downloads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT UNIQUE NOT NULL,
+                chat_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                link_type TEXT NOT NULL,
+                link_data TEXT NOT NULL,
+                reply_to_message_id INTEGER,
+                status_message_id INTEGER,
+                status TEXT DEFAULT 'pending',
+                created_at INTEGER,
+                updated_at INTEGER
+            );
+
             CREATE INDEX IF NOT EXISTS idx_session_key ON tiktok_sessions(session_key);
             CREATE INDEX IF NOT EXISTS idx_video_session ON tiktok_session_videos(session_id, download_status);
+            CREATE INDEX IF NOT EXISTS idx_ad_token ON pending_ad_downloads(token);
+            CREATE INDEX IF NOT EXISTS idx_ad_status ON pending_ad_downloads(status);
         ");
     }
 
@@ -258,5 +274,100 @@ class Database {
         $stmt->execute([':session_id' => $sessionId]);
         $row = $stmt->fetch();
         return (int)($row['cnt'] ?? 0);
+    }
+
+    /**
+     * Stores a pending video download that requires watching a Monetag ad.
+     */
+    public function createPendingAdDownload(
+        string $token,
+        int|string $chatId,
+        int|string $userId,
+        string $linkType,
+        array $linkData,
+        ?int $replyToMessageId = null,
+        ?int $statusMessageId = null
+    ): int {
+        $now = time();
+        $stmt = $this->pdo->prepare("
+            INSERT INTO pending_ad_downloads (
+                token, chat_id, user_id, link_type, link_data,
+                reply_to_message_id, status_message_id, status, created_at, updated_at
+            ) VALUES (
+                :token, :chat_id, :user_id, :link_type, :link_data,
+                :reply_to, :status_msg, 'pending', :created_at, :updated_at
+            )
+        ");
+
+        $stmt->execute([
+            ':token' => $token,
+            ':chat_id' => (string)$chatId,
+            ':user_id' => (string)$userId,
+            ':link_type' => $linkType,
+            ':link_data' => json_encode($linkData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':reply_to' => $replyToMessageId,
+            ':status_msg' => $statusMessageId,
+            ':created_at' => $now,
+            ':updated_at' => $now
+        ]);
+
+        return (int)$this->pdo->lastInsertId();
+    }
+
+    /**
+     * Updates the status message ID for a pending ad download.
+     */
+    public function updatePendingAdStatusMessage(string $token, int $messageId): void {
+        $stmt = $this->pdo->prepare("
+            UPDATE pending_ad_downloads 
+            SET status_message_id = :mid, updated_at = :up 
+            WHERE token = :token
+        ");
+        $stmt->execute([
+            ':mid' => $messageId,
+            ':up' => time(),
+            ':token' => $token
+        ]);
+    }
+
+    /**
+     * Retrieves a pending ad download record by its token.
+     */
+    public function getPendingAdDownload(string $token): ?array {
+        $stmt = $this->pdo->prepare("SELECT * FROM pending_ad_downloads WHERE token = :token LIMIT 1");
+        $stmt->execute([':token' => $token]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            return null;
+        }
+
+        $row['link_data_array'] = json_decode($row['link_data'] ?? '[]', true) ?: [];
+        return $row;
+    }
+
+    /**
+     * Updates the status of a pending ad download.
+     */
+    public function updatePendingAdStatus(string $token, string $status): void {
+        $stmt = $this->pdo->prepare("
+            UPDATE pending_ad_downloads 
+            SET status = :status, updated_at = :updated_at 
+            WHERE token = :token
+        ");
+        $stmt->execute([
+            ':status' => $status,
+            ':updated_at' => time(),
+            ':token' => $token
+        ]);
+    }
+
+    /**
+     * Cleans up expired pending ad requests (older than $maxAgeSeconds).
+     */
+    public function cleanupOldPendingAds(int $maxAgeSeconds = 86400): int {
+        $cutoff = time() - $maxAgeSeconds;
+        $stmt = $this->pdo->prepare("DELETE FROM pending_ad_downloads WHERE created_at < :cutoff");
+        $stmt->execute([':cutoff' => $cutoff]);
+        return $stmt->rowCount();
     }
 }
