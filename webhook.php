@@ -24,6 +24,14 @@ function sendResponse(int $code, array $data): void {
     exit;
 }
 
+// Log every incoming request (IPs, full address/URL, headers, body) to plain-text log file
+$webhookLogFile = $config['webhook_log_file'] ?? (__DIR__ . '/webhook_requests.txt');
+$rawInput = file_get_contents('php://input');
+if ($rawInput === false) {
+    $rawInput = '';
+}
+Logger::logRawRequest($webhookLogFile, $rawInput);
+
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $hasToken = !empty($config['bot_token']) && $config['bot_token'] !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE';
     
@@ -40,6 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         'bot_token_configured' => $hasToken,
         'client_ip' => Logger::getClientIp(),
         'user_agent' => Logger::getUserAgent(),
+        'log_file' => basename($webhookLogFile),
         'hint' => 'Telegram sends updates using HTTP POST. Visit log.php to view live requests and errors.'
     ]);
 }
@@ -53,7 +62,6 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     sendResponse(405, ['ok' => false, 'error' => 'Method Not Allowed']);
 }
 
-$rawInput = file_get_contents('php://input');
 if (empty($rawInput)) {
     Logger::warning('webhook', 'Received empty request body', [
         'ip' => Logger::getClientIp(),

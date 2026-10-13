@@ -4,6 +4,8 @@
 # Temporary download files and logs
 tmp/
 *.log
+webhook_requests.txt
+*.bak
 
 # Composer
 vendor/

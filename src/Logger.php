@@ -270,4 +270,104 @@ class Logger {
         $retained = array_slice($lines, -self::$maxEntries);
         @file_put_contents($filePath, implode("\n", $retained) . "\n", LOCK_EX);
     }
+
+    /**
+     * Records a detailed incoming HTTP request to a plain text file on the server.
+     * Captures request IPs (client, remote, forwarded), request address / URL, method, headers, and body.
+     */
+    public static function logRawRequest(string $filePath, ?string $rawBody = null): bool {
+        $dir = dirname($filePath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        if (!is_writable($dir) && self::$logDir && is_writable(self::$logDir)) {
+            $filePath = rtrim(self::$logDir, '/\\') . DIRECTORY_SEPARATOR . basename($filePath);
+        }
+
+        // Auto-rotate if log file exceeds 10MB to prevent disk exhaustion
+        if (file_exists($filePath) && @filesize($filePath) > 10 * 1024 * 1024) {
+            @rename($filePath, $filePath . '.' . date('Ymd_His') . '.bak');
+        }
+
+        $timestamp = date('Y-m-d H:i:s T');
+        $clientIp = self::getClientIp();
+        $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
+        $remotePort = $_SERVER['REMOTE_PORT'] ?? '';
+        $method = $_SERVER['REQUEST_METHOD'] ?? (PHP_SAPI === 'cli' ? 'CLI' : 'UNKNOWN');
+        $protocol = $_SERVER['SERVER_PROTOCOL'] ?? 'HTTP/1.1';
+
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (($_SERVER['SERVER_PORT'] ?? '') === '443')
+            || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+            ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
+        $uri = $_SERVER['REQUEST_URI'] ?? '/';
+        $fullUrl = PHP_SAPI === 'cli' ? 'CLI Request' : "{$scheme}://{$host}{$uri}";
+        $serverAddr = $_SERVER['SERVER_ADDR'] ?? 'Unknown';
+        $userAgent = self::getUserAgent();
+
+        $headers = [];
+        if (function_exists('getallheaders')) {
+            $all = getallheaders();
+            if (is_array($all)) {
+                $headers = $all;
+            }
+        }
+        if (empty($headers)) {
+            foreach ($_SERVER as $k => $v) {
+                if (str_starts_with($k, 'HTTP_')) {
+                    $name = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', substr($k, 5)))));
+                    $headers[$name] = (string)$v;
+                } elseif (in_array($k, ['CONTENT_TYPE', 'CONTENT_LENGTH'], true)) {
+                    $name = str_replace(' ', '-', ucwords(strtolower(str_replace('_', ' ', $k))));
+                    $headers[$name] = (string)$v;
+                }
+            }
+        }
+
+        $body = $rawBody ?? @file_get_contents('php://input');
+
+        $out = "================================================================================\n";
+        $out .= "REQUEST TIME:    {$timestamp}\n";
+        $out .= "METHOD:          {$method} {$protocol}\n";
+        $out .= "REQUEST ADDRESS: {$fullUrl}\n";
+        $out .= "REQUEST URI:     {$uri}\n";
+        $out .= "CLIENT IP:       {$clientIp}\n";
+        $out .= "REMOTE ADDRESS:  {$remoteAddr}" . ($remotePort !== '' ? ":{$remotePort}" : '') . "\n";
+        $out .= "SERVER HOST/IP:  {$host} ({$serverAddr})\n";
+        $out .= "USER-AGENT:      {$userAgent}\n";
+
+        if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            $out .= "X-FORWARDED-FOR: {$_SERVER['HTTP_X_FORWARDED_FOR']}\n";
+        }
+        if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+            $out .= "CF-CONNECTING-IP:{$_SERVER['HTTP_CF_CONNECTING_IP']}\n";
+        }
+        if (!empty($_GET)) {
+            $out .= "QUERY PARAMS:    " . json_encode($_GET, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        }
+
+        if (!empty($headers)) {
+            $out .= "HEADERS:\n";
+            foreach ($headers as $hName => $hVal) {
+                $out .= "  {$hName}: {$hVal}\n";
+            }
+        }
+
+        $out .= "BODY / PAYLOAD:\n";
+        if ($body !== '' && $body !== false && $body !== null) {
+            $decoded = json_decode((string)$body, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $out .= json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+            } else {
+                $out .= (string)$body . "\n";
+            }
+        } else {
+            $out .= "[EMPTY BODY]\n";
+        }
+        $out .= "================================================================================\n\n";
+
+        return (bool) @file_put_contents($filePath, $out, FILE_APPEND | LOCK_EX);
+    }
 }
+

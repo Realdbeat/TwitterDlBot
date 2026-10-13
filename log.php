@@ -90,6 +90,7 @@ if ($action !== '' && $isAuthenticated) {
                 'time' => date('Y-m-d H:i:s'),
                 'timezone' => date_default_timezone_get(),
                 'log_file' => Logger::getLogFilePath(),
+                'webhook_txt_log' => $config['webhook_log_file'] ?? (__DIR__ . '/webhook_requests.txt'),
                 'bot_script' => __DIR__ . '/bot.php',
                 'poll_url' => $pollUrl,
                 'cron_command' => '* * * * * curl -s "' . $pollUrl . '" >/dev/null 2>&1',
@@ -100,7 +101,7 @@ if ($action !== '' && $isAuthenticated) {
     }
 
     if ($action === 'clear' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-        Logger::clear();
+        Logger::clear($config['webhook_log_file'] ?? null);
         echo json_encode(['ok' => true, 'message' => 'Logs cleared successfully']);
         exit;
     }
@@ -122,6 +123,19 @@ if ($action !== '' && $isAuthenticated) {
         header('Content-Disposition: attachment; filename="bot_logs_' . date('Ymd_His') . '.json"');
         $entries = Logger::getEntries(1000);
         echo json_encode($entries, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    if ($action === 'download_txt') {
+        $txtFile = $config['webhook_log_file'] ?? (__DIR__ . '/webhook_requests.txt');
+        if (file_exists($txtFile)) {
+            header('Content-Type: text/plain; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . basename($txtFile) . '"');
+            readfile($txtFile);
+            exit;
+        }
+        header('Content-Type: text/plain; charset=utf-8');
+        echo "No requests logged to text file yet. Send a request to webhook.php to generate logs.";
         exit;
     }
 }
@@ -740,6 +754,7 @@ if (!$isAuthenticated): ?>
             </select>
             <button class="btn btn-primary" onclick="fetchLogs(true)">🔄 Refresh</button>
             <a href="log.php?action=download" class="btn">📥 Export JSON</a>
+            <a href="log.php?action=download_txt" class="btn" title="Download raw webhook requests text file">📄 Requests .txt</a>
             <button class="btn btn-danger" onclick="confirmClearLogs()">🗑️ Clear Logs</button>
             <?php if (!empty($configuredPassword)): ?>
                 <a href="log.php?logout=1" class="btn">🔒 Logout</a>
