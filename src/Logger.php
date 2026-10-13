@@ -32,10 +32,6 @@ class Logger {
      * Resolves the real client IP address
      */
     public static function getClientIp(): string {
-        if (PHP_SAPI === 'cli') {
-            return '127.0.0.1 (CLI)';
-        }
-
         $headers = [
             'HTTP_CF_CONNECTING_IP',
             'HTTP_X_REAL_IP',
@@ -46,7 +42,7 @@ class Logger {
 
         foreach ($headers as $header) {
             if (!empty($_SERVER[$header])) {
-                $raw = trim($_SERVER[$header]);
+                $raw = trim((string)$_SERVER[$header]);
                 if (str_contains($raw, ',')) {
                     $parts = explode(',', $raw);
                     $raw = trim($parts[0]);
@@ -57,6 +53,10 @@ class Logger {
             }
         }
 
+        if (PHP_SAPI === 'cli') {
+            return '127.0.0.1 (CLI)';
+        }
+
         return $_SERVER['REMOTE_ADDR'] ?? 'Unknown IP';
     }
 
@@ -64,11 +64,14 @@ class Logger {
      * Resolves client User-Agent
      */
     public static function getUserAgent(): string {
+        $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        if ($ua !== '') {
+            return trim((string)$ua);
+        }
         if (PHP_SAPI === 'cli') {
             return 'CLI Process';
         }
-        $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        return $ua !== '' ? trim($ua) : '[EMPTY/MISSING]';
+        return '[EMPTY/MISSING]';
     }
 
     /**
@@ -300,9 +303,13 @@ class Logger {
             || (($_SERVER['SERVER_PORT'] ?? '') === '443')
             || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
             ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost';
+        $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
         $uri = $_SERVER['REQUEST_URI'] ?? '/';
-        $fullUrl = PHP_SAPI === 'cli' ? 'CLI Request' : "{$scheme}://{$host}{$uri}";
+        if ($host !== '') {
+            $fullUrl = "{$scheme}://{$host}{$uri}";
+        } else {
+            $fullUrl = PHP_SAPI === 'cli' ? "CLI Request ({$uri})" : "{$scheme}://localhost{$uri}";
+        }
         $serverAddr = $_SERVER['SERVER_ADDR'] ?? 'Unknown';
         $userAgent = self::getUserAgent();
 
