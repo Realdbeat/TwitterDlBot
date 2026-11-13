@@ -247,10 +247,18 @@ php set_webhook.php delete
 
 ---
 
-## 📊 Live Activity, IP & Error Monitor (`log.php`)
+## 📊 Live Activity, IP & Error Monitor & Broadcast Dashboard (`log.php`)
 
-Visit `https://yourdomain.com/log.php` in any web browser to open the real-time activity and diagnostics dashboard:
+Visit `https://yourdomain.com/log.php` in any web browser to open the real-time activity, diagnostics, and message broadcast dashboard:
 
+- **📢 User Broadcast & Announcement Engine**:
+  - Compose announcements and updates with a rich HTML/Markdown formatting toolbar (`<b>`, `<i>`, `<code>`, `<a href="...">`, `<tg-spoiler>`, `<blockquote>`).
+  - Target specific audiences: **All Users**, **Free Tier Users Only**, or **⭐ Premium Subscribers Only**.
+  - Attach optional interactive inline keyboard URL buttons (e.g. `Join Channel`, `Try New Feature`).
+  - **Live Telegram Chat Mockup**: Visual phone/chat preview rendering your message and inline button in real time before sending.
+  - **🧪 Safe Test Sender**: Send a test to your admin chat ID first to inspect formatting directly in Telegram.
+  - **Rate-Limited Broadcast Worker**: Safely transmits at ~28 messages/second with automatic retry handling on 429 rate limits, logging successes and errors.
+  - **Campaign History**: View previous broadcast campaigns, recipient totals, and delivery ratios.
 - **Client IP Tracking**: Accurately records visitor and Telegram Bot API server IPs (supports Cloudflare, Reverse Proxies, and direct connections).
 - **User-Agent Inspector**: Clearly displays incoming `User-Agent` strings and highlights `[EMPTY/MISSING]` headers so you can easily spot if ModSecurity or WAF blocked a request.
 - **Telegram Webhook Health Card**: Live check against Telegram's Bot API displaying your active webhook URL, pending update queue count, and any recent error messages.

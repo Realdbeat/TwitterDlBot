@@ -1843,9 +1843,320 @@ if (!$isAuthenticated): ?>
                 .replace(/'/g, '&#039;');
         }
 
+        // ==================== BROADCAST ENGINE ====================
+        let broadcastStatsData = null;
+
+        function switchTab(tab) {
+            const isLogs = (tab === 'logs');
+            document.getElementById('tab-btn-logs').classList.toggle('active', isLogs);
+            document.getElementById('tab-btn-broadcast').classList.toggle('active', !isLogs);
+
+            document.getElementById('view-logs').style.display = isLogs ? 'block' : 'none';
+            document.getElementById('view-broadcast').style.display = isLogs ? 'none' : 'block';
+
+            if (!isLogs) {
+                loadBroadcastStats();
+                updateBroadcastPreview();
+            }
+            history.replaceState(null, null, isLogs ? '#logs' : '#broadcast');
+        }
+
+        async function loadBroadcastStats() {
+            try {
+                const res = await fetch('log.php?action=broadcast_stats');
+                const data = await res.json();
+                if (data.ok) {
+                    broadcastStatsData = data;
+                    const s = data.stats || {};
+                    document.getElementById('bcast-stat-total').innerText = s.total_users || 0;
+                    document.getElementById('bcast-stat-premium').innerText = s.premium_users || 0;
+                    document.getElementById('bcast-stat-free').innerText = s.free_users || 0;
+                    document.getElementById('bcast-stat-referrals').innerText = s.total_referrals || 0;
+                    document.getElementById('badge-user-count').innerText = `${s.total_users || 0} Users`;
+
+                    if (data.admin_chat_id && !document.getElementById('bcast-test-chat-id').value) {
+                        document.getElementById('bcast-test-chat-id').value = data.admin_chat_id;
+                    }
+
+                    renderRecentBroadcasts(data.recent || []);
+                    onTargetGroupChange();
+                }
+            } catch (err) {
+                console.error('Failed to load broadcast stats:', err);
+            }
+        }
+
+        function onTargetGroupChange() {
+            const target = document.getElementById('bcast-target').value;
+            const badge = document.getElementById('bcast-target-badge');
+            const submitBtn = document.getElementById('btn-broadcast-submit');
+            const s = (broadcastStatsData && broadcastStatsData.stats) ? broadcastStatsData.stats : { total_users: 0, premium_users: 0, free_users: 0 };
+            
+            if (target === 'all') {
+                badge.innerText = `Audience: All (${s.total_users || 0} Users)`;
+                badge.className = 'badge badge-info';
+                submitBtn.innerText = `🚀 Broadcast Message to All Users (${s.total_users || 0})`;
+            } else if (target === 'premium') {
+                badge.innerText = `Audience: Premium (${s.premium_users || 0} Users)`;
+                badge.className = 'badge badge-warning';
+                submitBtn.innerText = `⭐ Broadcast to Premium Users (${s.premium_users || 0})`;
+            } else {
+                badge.innerText = `Audience: Free (${s.free_users || 0} Users)`;
+                badge.className = 'badge badge-success';
+                submitBtn.innerText = `👤 Broadcast to Free Users (${s.free_users || 0})`;
+            }
+        }
+
+        function updateBroadcastPreview() {
+            const msg = document.getElementById('bcast-message').value;
+            const mode = document.getElementById('bcast-parse-mode').value;
+            const btnText = document.getElementById('bcast-btn-text').value.trim();
+            const btnUrl = document.getElementById('bcast-btn-url').value.trim();
+
+            // Update Counter
+            const counter = document.getElementById('char-counter');
+            counter.innerText = `${msg.length} / 4096`;
+            counter.className = 'char-counter' + (msg.length > 4000 ? ' danger' : (msg.length > 3000 ? ' warning' : ''));
+
+            // Format Message for Preview
+            const previewBox = document.getElementById('preview-msg-content');
+            if (!msg.trim()) {
+                previewBox.innerHTML = '<i>Your message preview will appear here in real time as you type...</i>';
+            } else if (mode === 'HTML') {
+                let html = escapeHtml(msg);
+                html = html
+                    .replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/gis, '<b>$1</b>')
+                    .replace(/&lt;strong&gt;(.*?)&lt;\/strong&gt;/gis, '<strong>$1</strong>')
+                    .replace(/&lt;i&gt;(.*?)&lt;\/i&gt;/gis, '<i>$1</i>')
+                    .replace(/&lt;em&gt;(.*?)&lt;\/em&gt;/gis, '<em>$1</em>')
+                    .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gis, '<u>$1</u>')
+                    .replace(/&lt;s&gt;(.*?)&lt;\/s&gt;/gis, '<s>$1</s>')
+                    .replace(/&lt;strike&gt;(.*?)&lt;\/strike&gt;/gis, '<s>$1</s>')
+                    .replace(/&lt;code&gt;(.*?)&lt;\/code&gt;/gis, '<code>$1</code>')
+                    .replace(/&lt;pre&gt;(.*?)&lt;\/pre&gt;/gis, '<pre>$1</pre>')
+                    .replace(/&lt;tg-spoiler&gt;(.*?)&lt;\/tg-spoiler&gt;/gis, '<tg-spoiler>$1</tg-spoiler>')
+                    .replace(/&lt;blockquote&gt;(.*?)&lt;\/blockquote&gt;/gis, '<blockquote style="border-left: 2px solid #64b5f6; margin: 4px 0; padding-left: 8px;">$1</blockquote>')
+                    .replace(/&lt;a\s+href=&quot;([^&]+)&quot;&gt;(.*?)&lt;\/a&gt;/gis, '<a href="$1" target="_blank">$2</a>');
+                previewBox.innerHTML = html;
+            } else if (mode === 'Markdown') {
+                let md = escapeHtml(msg);
+                md = md
+                    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+                    .replace(/\*(.*?)\*/g, '<b>$1</b>')
+                    .replace(/_(.*?)_/g, '<i>$1</i>')
+                    .replace(/`(.*?)`/g, '<code>$1</code>')
+                    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>');
+                previewBox.innerHTML = md;
+            } else {
+                previewBox.innerText = msg;
+            }
+
+            // Time
+            const now = new Date();
+            document.getElementById('preview-msg-time').innerText = 
+                now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+
+            // Inline Button Preview
+            const btnElem = document.getElementById('preview-inline-btn');
+            if (btnText !== '' && btnUrl !== '') {
+                btnElem.style.display = 'block';
+                document.getElementById('preview-btn-text').innerText = btnText;
+            } else {
+                btnElem.style.display = 'none';
+            }
+        }
+
+        function insertTag(openTag, closeTag) {
+            const textarea = document.getElementById('bcast-message');
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const text = textarea.value;
+            const selected = text.substring(start, end);
+            const replacement = openTag + (selected || 'text') + closeTag;
+
+            textarea.value = text.substring(0, start) + replacement + text.substring(end);
+            textarea.focus();
+            textarea.setSelectionRange(start + openTag.length, start + openTag.length + (selected ? selected.length : 4));
+            updateBroadcastPreview();
+        }
+
+        async function sendTestBroadcast() {
+            const msg = document.getElementById('bcast-message').value.trim();
+            const testChatId = document.getElementById('bcast-test-chat-id').value.trim();
+            const parseMode = document.getElementById('bcast-parse-mode').value;
+            const btnText = document.getElementById('bcast-btn-text').value.trim();
+            const btnUrl = document.getElementById('bcast-btn-url').value.trim();
+            const disablePreview = document.getElementById('bcast-disable-preview').checked;
+            const resultBox = document.getElementById('test-result-msg');
+
+            if (!msg) {
+                alert('Please enter a message before sending a test.');
+                return;
+            }
+            if (!testChatId) {
+                alert('Please enter a Test Chat ID (your personal Telegram Chat ID).');
+                return;
+            }
+
+            resultBox.style.display = 'block';
+            resultBox.style.color = '#93c5fd';
+            resultBox.innerText = '⏳ Sending test message to Telegram...';
+
+            try {
+                const res = await fetch('log.php?action=broadcast_test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: msg,
+                        test_chat_id: testChatId,
+                        parse_mode: parseMode,
+                        button_text: btnText,
+                        button_url: btnUrl,
+                        disable_web_page_preview: disablePreview
+                    })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    resultBox.style.color = '#34d399';
+                    resultBox.innerText = '✅ ' + data.message;
+                } else {
+                    resultBox.style.color = '#f87171';
+                    resultBox.innerText = '❌ ' + (data.error || 'Failed to send test message');
+                }
+            } catch (err) {
+                resultBox.style.color = '#f87171';
+                resultBox.innerText = '❌ Error: ' + err.message;
+            }
+        }
+
+        async function confirmAndSendBroadcast() {
+            const msg = document.getElementById('bcast-message').value.trim();
+            const targetGroup = document.getElementById('bcast-target').value;
+            const parseMode = document.getElementById('bcast-parse-mode').value;
+            const btnText = document.getElementById('bcast-btn-text').value.trim();
+            const btnUrl = document.getElementById('bcast-btn-url').value.trim();
+            const disablePreview = document.getElementById('bcast-disable-preview').checked;
+
+            if (!msg) {
+                alert('Please enter a message to broadcast.');
+                return;
+            }
+
+            const s = (broadcastStatsData && broadcastStatsData.stats) ? broadcastStatsData.stats : { total_users: 0, premium_users: 0, free_users: 0 };
+            let recipientCount = s.total_users || 0;
+            if (targetGroup === 'premium') recipientCount = s.premium_users || 0;
+            if (targetGroup === 'free') recipientCount = s.free_users || 0;
+
+            if (recipientCount === 0) {
+                if (!confirm(`Warning: No registered users found under '${targetGroup}'. Do you still want to proceed?`)) {
+                    return;
+                }
+            } else {
+                if (!confirm(`⚠️ ARE YOU SURE?\n\nYou are about to send this broadcast message to ${recipientCount} user(s) (${targetGroup.toUpperCase()}).\n\nClick OK to start broadcasting.`)) {
+                    return;
+                }
+            }
+
+            // Open progress modal
+            const modal = document.getElementById('broadcast-modal');
+            modal.classList.add('open');
+            document.getElementById('bcast-modal-title').innerText = '🚀 Broadcasting in Progress';
+            document.getElementById('bcast-modal-status').innerText = `Sending to ${recipientCount} users...`;
+            document.getElementById('bcast-modal-desc').innerText = 'Delivering messages via Telegram Bot API with rate limiting. Please wait...';
+            document.getElementById('bcast-progress-fill').style.width = '30%';
+            document.getElementById('bcast-stat-recipients').innerText = recipientCount;
+            document.getElementById('bcast-stat-sent').innerText = '...';
+            document.getElementById('bcast-stat-failed').innerText = '...';
+            document.getElementById('bcast-modal-actions').style.display = 'none';
+
+            try {
+                const res = await fetch('log.php?action=broadcast_send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: msg,
+                        target_group: targetGroup,
+                        parse_mode: parseMode,
+                        button_text: btnText,
+                        button_url: btnUrl,
+                        disable_web_page_preview: disablePreview
+                    })
+                });
+
+                const data = await res.json();
+                document.getElementById('bcast-progress-fill').style.width = '100%';
+
+                if (data.ok) {
+                    document.getElementById('bcast-modal-title').innerText = '✅ Broadcast Complete';
+                    document.getElementById('bcast-modal-status').innerText = 'Successfully delivered!';
+                    document.getElementById('bcast-modal-desc').innerText = data.message;
+                    document.getElementById('bcast-stat-recipients').innerText = data.total;
+                    document.getElementById('bcast-stat-sent').innerText = data.sent;
+                    document.getElementById('bcast-stat-failed').innerText = data.failed;
+                } else {
+                    document.getElementById('bcast-modal-title').innerText = '❌ Broadcast Failed';
+                    document.getElementById('bcast-modal-status').innerText = 'Error occurred';
+                    document.getElementById('bcast-modal-desc').innerText = data.error || 'Unknown error occurred';
+                }
+            } catch (err) {
+                document.getElementById('bcast-modal-title').innerText = '❌ Network Error';
+                document.getElementById('bcast-modal-status').innerText = 'Request failed';
+                document.getElementById('bcast-modal-desc').innerText = err.message;
+            } finally {
+                document.getElementById('bcast-modal-actions').style.display = 'block';
+                loadBroadcastStats();
+            }
+        }
+
+        function closeBroadcastModal() {
+            document.getElementById('broadcast-modal').classList.remove('open');
+        }
+
+        function renderRecentBroadcasts(campaigns) {
+            const tbody = document.getElementById('recent-broadcasts-tbody');
+            if (!campaigns || campaigns.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" class="empty-state">
+                            <div class="empty-icon">📢</div>
+                            <div style="font-weight: 600;">No broadcasts sent yet</div>
+                            <div style="font-size: 0.8rem; margin-top: 4px;">Compose a message above to send your first broadcast campaign.</div>
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            campaigns.forEach(c => {
+                const date = c.created_at ? new Date(c.created_at * 1000).toLocaleString() : 'N/A';
+                const msgSnippet = (c.message || '').replace(/<[^>]+>/g, '').substring(0, 70) + ((c.message || '').length > 70 ? '...' : '');
+                const btnBadge = c.button_text ? `<span class="type-tag" title="${escapeHtml(c.button_url || '')}">🔗 ${escapeHtml(c.button_text)}</span>` : '<span style="color:var(--text-dim);">-</span>';
+                const targetBadge = `<span class="badge ${c.target_group === 'premium' ? 'badge-warning' : (c.target_group === 'free' ? 'badge-success' : 'badge-info')}">${escapeHtml(c.target_group)}</span>`;
+
+                html += `
+                    <tr>
+                        <td style="white-space: nowrap; font-family: var(--font-mono); font-size: 0.78rem;">${date}</td>
+                        <td>${targetBadge}</td>
+                        <td><span class="type-tag">${escapeHtml(c.parse_mode || 'HTML')}</span></td>
+                        <td><b>${c.total_recipients || 0}</b></td>
+                        <td><span style="color: #34d399; font-weight: 600;">${c.sent_count || 0}</span></td>
+                        <td><span style="color: ${(c.failed_count || 0) > 0 ? '#f87171' : 'var(--text-dim)'}; font-weight: 600;">${c.failed_count || 0}</span></td>
+                        <td>${btnBadge}</td>
+                        <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(c.message)}">${escapeHtml(msgSnippet)}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
         // Initialize on load
         fetchLogs();
         updateAutoRefresh();
+        loadBroadcastStats();
+        if (window.location.hash === '#broadcast') {
+            switchTab('broadcast');
+        }
     </script>
 </body>
 </html>
