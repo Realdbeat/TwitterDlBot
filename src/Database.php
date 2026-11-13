@@ -103,6 +103,19 @@ class Database {
                 created_at INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS bot_broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message TEXT NOT NULL,
+                target_group TEXT NOT NULL,
+                parse_mode TEXT DEFAULT 'HTML',
+                button_text TEXT,
+                button_url TEXT,
+                total_recipients INTEGER DEFAULT 0,
+                sent_count INTEGER DEFAULT 0,
+                failed_count INTEGER DEFAULT 0,
+                created_at INTEGER
+            );
+
             CREATE INDEX IF NOT EXISTS idx_session_key ON tiktok_sessions(session_key);
             CREATE INDEX IF NOT EXISTS idx_video_session ON tiktok_session_videos(session_id, download_status);
             CREATE INDEX IF NOT EXISTS idx_ad_token ON pending_ad_downloads(token);
@@ -653,5 +666,98 @@ class Database {
         $newUntil = $this->addPremiumDays($userId, $durationDays);
 
         return $newUntil;
+    }
+
+    /**
+     * Retrieves all bot users, optionally filtered by 'all', 'premium', or 'free'.
+     *
+     * @return array<int, array{user_id: string, chat_id: string, username: ?string, first_name: ?string, premium_until: int, created_at: int}>
+     */
+    public function getAllUsers(?string $filter = null): array {
+        $now = time();
+        if ($filter === 'premium') {
+            $stmt = $this->pdo->prepare("SELECT user_id, chat_id, username, first_name, premium_until, created_at FROM bot_users WHERE premium_until > :now ORDER BY created_at DESC");
+            $stmt->execute([':now' => $now]);
+        } elseif ($filter === 'free') {
+            $stmt = $this->pdo->prepare("SELECT user_id, chat_id, username, first_name, premium_until, created_at FROM bot_users WHERE premium_until <= :now ORDER BY created_at DESC");
+            $stmt->execute([':now' => $now]);
+        } else {
+            $stmt = $this->pdo->query("SELECT user_id, chat_id, username, first_name, premium_until, created_at FROM bot_users ORDER BY created_at DESC");
+        }
+
+        return $stmt->fetchAll() ?: [];
+    }
+
+    /**
+     * Retrieves summary user and subscription counts.
+     */
+    public function getUserStats(): array {
+        $now = time();
+        $totalStmt = $this->pdo->query("SELECT COUNT(*) AS total FROM bot_users");
+        $total = (int)($totalStmt->fetch()['total'] ?? 0);
+
+        $premiumStmt = $this->pdo->prepare("SELECT COUNT(*) AS total FROM bot_users WHERE premium_until > :now");
+        $premiumStmt->execute([':now' => $now]);
+        $premium = (int)($premiumStmt->fetch()['total'] ?? 0);
+
+        $free = max(0, $total - $premium);
+
+        $refStmt = $this->pdo->query("SELECT COUNT(*) AS total FROM bot_referrals");
+        $referrals = (int)($refStmt->fetch()['total'] ?? 0);
+
+        return [
+            'total_users' => $total,
+            'premium_users' => $premium,
+            'free_users' => $free,
+            'total_referrals' => $referrals
+        ];
+    }
+
+    /**
+     * Records a completed or attempted broadcast campaign in database.
+     */
+    public function recordBroadcast(
+        string $message,
+        string $targetGroup,
+        string $parseMode = 'HTML',
+        ?string $buttonText = null,
+        ?string $buttonUrl = null,
+        int $totalRecipients = 0,
+        int $sentCount = 0,
+        int $failedCount = 0
+    ): int {
+        $now = time();
+        $stmt = $this->pdo->prepare("
+            INSERT INTO bot_broadcasts (
+                message, target_group, parse_mode, button_text, button_url,
+                total_recipients, sent_count, failed_count, created_at
+            ) VALUES (
+                :msg, :grp, :mode, :btext, :burl,
+                :total, :sent, :failed, :now
+            )
+        ");
+        $stmt->execute([
+            ':msg' => $message,
+            ':grp' => $targetGroup,
+            ':mode' => $parseMode,
+            ':btext' => $buttonText,
+            ':burl' => $buttonUrl,
+            ':total' => $totalRecipients,
+            ':sent' => $sentCount,
+            ':failed' => $failedCount,
+            ':now' => $now
+        ]);
+
+        return (int)$this->pdo->lastInsertId();
+    }
+
+    /**
+     * Retrieves recent broadcast records.
+     */
+    public function getRecentBroadcasts(int $limit = 5): array {
+        $stmt = $this->pdo->prepare("SELECT * FROM bot_broadcasts ORDER BY id DESC LIMIT :limit");
+        $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll() ?: [];
     }
 }

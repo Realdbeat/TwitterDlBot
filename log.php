@@ -12,6 +12,7 @@ $config = require __DIR__ . '/config.php';
 
 use TwitterDlBot\TelegramBot;
 use TwitterDlBot\Logger;
+use TwitterDlBot\Database;
 
 // Security check: Check password if LOG_PASSWORD is set in .env
 $configuredPassword = $config['log_password'] ?? '';
@@ -97,6 +98,188 @@ if ($action !== '' && $isAuthenticated) {
                 'cli_cron_command' => '* * * * * ' . $detectedCliPhp . ' ' . __DIR__ . '/bot.php --cron >/dev/null 2>&1'
             ]
         ]);
+        exit;
+    }
+
+    if ($action === 'broadcast_stats') {
+        $db = new Database($config['temp_dir']);
+        $stats = $db->getUserStats();
+        $recent = $db->getRecentBroadcasts(8);
+        echo json_encode([
+            'ok' => true,
+            'stats' => $stats,
+            'recent' => $recent,
+            'admin_chat_id' => $config['admin_chat_id'] ?? ''
+        ]);
+        exit;
+    }
+
+    if ($action === 'broadcast_test' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $raw = file_get_contents('php://input');
+        $data = json_decode($raw, true) ?: $_POST;
+
+        $message = trim((string)($data['message'] ?? ''));
+        $testChatId = trim((string)($data['test_chat_id'] ?? '')) ?: ($config['admin_chat_id'] ?? '');
+        $parseMode = trim((string)($data['parse_mode'] ?? 'HTML'));
+        $buttonText = trim((string)($data['button_text'] ?? ''));
+        $buttonUrl = trim((string)($data['button_url'] ?? ''));
+        $disablePreview = filter_var($data['disable_web_page_preview'] ?? true, FILTER_VALIDATE_BOOLEAN);
+
+        if ($message === '') {
+            echo json_encode(['ok' => false, 'error' => 'Message text cannot be empty']);
+            exit;
+        }
+
+        if (empty($testChatId)) {
+            echo json_encode(['ok' => false, 'error' => 'Please provide a test Chat ID or configure ADMIN_CHAT_ID in .env']);
+            exit;
+        }
+
+        if (empty($config['bot_token']) || $config['bot_token'] === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+            echo json_encode(['ok' => false, 'error' => 'Telegram Bot Token is not configured in .env']);
+            exit;
+        }
+
+        try {
+            $bot = new TelegramBot($config['bot_token'], 15);
+            $options = [
+                'parse_mode' => $parseMode,
+                'disable_web_page_preview' => $disablePreview
+            ];
+
+            if ($buttonText !== '' && $buttonUrl !== '') {
+                $options['reply_markup'] = [
+                    'inline_keyboard' => [
+                        [['text' => $buttonText, 'url' => $buttonUrl]]
+                    ]
+                ];
+            }
+
+            $res = $bot->sendMessage($testChatId, $message, $options);
+            if ($res['ok'] ?? false) {
+                Logger::info('broadcast_test', "Test broadcast sent to admin {$testChatId}", ['chat_id' => $testChatId]);
+                echo json_encode(['ok' => true, 'message' => "Test message delivered to chat {$testChatId}!"]);
+            } else {
+                echo json_encode(['ok' => false, 'error' => $res['description'] ?? 'Telegram API error']);
+            }
+        } catch (\Throwable $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($action === 'broadcast_send' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+
+        $raw = file_get_contents('php://input');
+        $data = json_decode($raw, true) ?: $_POST;
+
+        $message = trim((string)($data['message'] ?? ''));
+        $targetGroup = trim((string)($data['target_group'] ?? 'all'));
+        $parseMode = trim((string)($data['parse_mode'] ?? 'HTML'));
+        $buttonText = trim((string)($data['button_text'] ?? ''));
+        $buttonUrl = trim((string)($data['button_url'] ?? ''));
+        $disablePreview = filter_var($data['disable_web_page_preview'] ?? true, FILTER_VALIDATE_BOOLEAN);
+
+        if ($message === '') {
+            echo json_encode(['ok' => false, 'error' => 'Message text cannot be empty']);
+            exit;
+        }
+
+        if (empty($config['bot_token']) || $config['bot_token'] === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+            echo json_encode(['ok' => false, 'error' => 'Telegram Bot Token is not configured in .env']);
+            exit;
+        }
+
+        try {
+            $db = new Database($config['temp_dir']);
+            $users = $db->getAllUsers($targetGroup);
+
+            if (empty($users)) {
+                echo json_encode(['ok' => false, 'error' => "No users found in target audience '{$targetGroup}'."]);
+                exit;
+            }
+
+            $bot = new TelegramBot($config['bot_token'], 10);
+            $options = [
+                'parse_mode' => $parseMode,
+                'disable_web_page_preview' => $disablePreview
+            ];
+
+            if ($buttonText !== '' && $buttonUrl !== '') {
+                $options['reply_markup'] = [
+                    'inline_keyboard' => [
+                        [['text' => $buttonText, 'url' => $buttonUrl]]
+                    ]
+                ];
+            }
+
+            $total = count($users);
+            $sent = 0;
+            $failed = 0;
+            $failedSamples = [];
+
+            foreach ($users as $user) {
+                $chatId = $user['chat_id'];
+                $res = $bot->sendMessage($chatId, $message, $options);
+
+                if ($res['ok'] ?? false) {
+                    $sent++;
+                } else {
+                    $failed++;
+                    $desc = $res['description'] ?? 'Unknown error';
+                    if (count($failedSamples) < 5) {
+                        $failedSamples[] = "ID {$chatId}: {$desc}";
+                    }
+
+                    // Handle 429 rate limit if encountered
+                    if (($res['error_code'] ?? 0) === 429 && !empty($res['parameters']['retry_after'])) {
+                        $retryAfter = (int)$res['parameters']['retry_after'];
+                        sleep($retryAfter + 1);
+                        $retryRes = $bot->sendMessage($chatId, $message, $options);
+                        if ($retryRes['ok'] ?? false) {
+                            $sent++;
+                            $failed--;
+                            array_pop($failedSamples);
+                        }
+                    }
+                }
+
+                // ~28 messages per second to safely remain under Telegram's 30 msg/sec broadcast cap
+                usleep(35000);
+            }
+
+            $db->recordBroadcast(
+                $message,
+                $targetGroup,
+                $parseMode,
+                $buttonText ?: null,
+                $buttonUrl ?: null,
+                $total,
+                $sent,
+                $failed
+            );
+
+            Logger::info('broadcast', "Broadcast sent to {$sent}/{$total} users ({$failed} failed).", [
+                'target' => $targetGroup,
+                'sent' => $sent,
+                'failed' => $failed,
+                'total' => $total
+            ]);
+
+            echo json_encode([
+                'ok' => true,
+                'total' => $total,
+                'sent' => $sent,
+                'failed' => $failed,
+                'failed_samples' => $failedSamples,
+                'message' => "Broadcast complete! Successfully delivered to {$sent} of {$total} users."
+            ]);
+        } catch (\Throwable $e) {
+            Logger::error('broadcast', "Broadcast error: " . $e->getMessage());
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+        }
         exit;
     }
 
@@ -728,6 +911,312 @@ if (!$isAuthenticated): ?>
             .header-actions { width: 100%; justify-content: flex-start; }
             .stats-grid { grid-template-columns: 1fr 1fr; }
         }
+
+        /* Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 10px;
+        }
+        .nav-tab {
+            padding: 10px 18px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 0.92rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+        }
+        .nav-tab:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.04);
+        }
+        .nav-tab.active {
+            color: #fff;
+            background: var(--surface);
+            border-color: var(--border);
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+        }
+
+        /* Broadcast Layout Grid */
+        .broadcast-layout {
+            display: grid;
+            grid-template-columns: 1.25fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        @media (max-width: 960px) {
+            .broadcast-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .form-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.5rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+        }
+        .form-card-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .form-group {
+            margin-bottom: 1.2rem;
+        }
+        .form-label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+        .form-control {
+            width: 100%;
+            padding: 9px 12px;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 0.88rem;
+            outline: none;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .form-control:focus {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+        }
+        textarea.form-control {
+            font-family: var(--font-mono);
+            font-size: 0.86rem;
+            line-height: 1.45;
+            resize: vertical;
+            min-height: 170px;
+        }
+
+        .format-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-bottom: 8px;
+        }
+        .tool-btn {
+            padding: 4px 9px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-main);
+            font-size: 0.76rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .tool-btn:hover {
+            background: rgba(255, 255, 255, 0.14);
+            border-color: var(--border-hover);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        @media (max-width: 600px) {
+            .form-row { grid-template-columns: 1fr; }
+        }
+
+        .char-counter {
+            font-size: 0.76rem;
+            color: var(--text-dim);
+            text-align: right;
+            margin-top: 4px;
+            font-family: var(--font-mono);
+        }
+        .char-counter.warning { color: var(--accent-amber); }
+        .char-counter.danger { color: var(--accent-red); font-weight: 700; }
+
+        .checkbox-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.84rem;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+        }
+        .checkbox-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent-blue);
+            cursor: pointer;
+        }
+
+        .test-box {
+            background: rgba(30, 41, 59, 0.45);
+            border: 1px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            padding: 12px 14px;
+            margin-top: 1rem;
+            margin-bottom: 1.25rem;
+        }
+
+        /* Telegram Live Chat Mockup Preview */
+        .telegram-preview-box {
+            background: #0e1621;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            min-height: 480px;
+        }
+        .telegram-preview-header {
+            background: #17212b;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .telegram-avatar {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #2aabee, #229ed9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 19px;
+            color: white;
+            font-weight: 700;
+        }
+        .telegram-bot-info h4 {
+            font-size: 0.92rem;
+            color: #fff;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .telegram-bot-badge {
+            font-size: 0.65rem;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            color: #a5b4fc;
+            text-transform: uppercase;
+        }
+        .telegram-bot-info p {
+            font-size: 0.75rem;
+            color: #6c7883;
+        }
+        .telegram-preview-body {
+            flex: 1;
+            padding: 1.25rem;
+            background-color: #0e1621;
+            background-image: radial-gradient(#17212b 1.5px, transparent 1.5px);
+            background-size: 16px 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .telegram-msg-bubble {
+            background: #182533;
+            border-radius: 12px 12px 12px 2px;
+            padding: 10px 14px 22px 14px;
+            color: #f5f5f5;
+            font-size: 0.88rem;
+            line-height: 1.45;
+            word-break: break-word;
+            position: relative;
+            max-width: 92%;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+        }
+        .telegram-msg-bubble a {
+            color: #64b5f6;
+            text-decoration: underline;
+        }
+        .telegram-msg-bubble code {
+            font-family: var(--font-mono);
+            background: rgba(0, 0, 0, 0.28);
+            padding: 2px 5px;
+            border-radius: 4px;
+            color: #ffb74d;
+            font-size: 0.84rem;
+        }
+        .telegram-msg-bubble pre {
+            font-family: var(--font-mono);
+            background: rgba(0, 0, 0, 0.35);
+            padding: 8px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 6px 0;
+            color: #81c784;
+            font-size: 0.82rem;
+        }
+        .telegram-msg-bubble tg-spoiler {
+            background: rgba(255, 255, 255, 0.25);
+            color: transparent;
+            border-radius: 3px;
+            user-select: none;
+        }
+        .telegram-msg-time {
+            position: absolute;
+            right: 8px;
+            bottom: 4px;
+            font-size: 0.68rem;
+            color: #6c7883;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .telegram-action-btn-preview {
+            display: block;
+            width: 92%;
+            background: #2b5278;
+            color: #fff;
+            text-align: center;
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+
+        /* Broadcast Progress Modal */
+        .progress-bar-bg {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            height: 14px;
+            overflow: hidden;
+            margin: 12px 0;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #3b82f6, #10b981);
+            transition: width 0.3s ease;
+        }
     </style>
 </head>
 <body>
@@ -753,6 +1242,7 @@ if (!$isAuthenticated): ?>
                 <option value="0">Auto-refresh: Off</option>
             </select>
             <button class="btn btn-primary" onclick="fetchLogs(true)">🔄 Refresh</button>
+            <button class="btn" style="background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; border: none;" onclick="switchTab('broadcast')">📢 Broadcast</button>
             <a href="log.php?action=download" class="btn">📥 Export JSON</a>
             <a href="log.php?action=download_txt" class="btn" title="Download raw webhook requests text file">📄 Requests .txt</a>
             <button class="btn btn-danger" onclick="confirmClearLogs()">🗑️ Clear Logs</button>
@@ -762,91 +1252,312 @@ if (!$isAuthenticated): ?>
         </div>
     </header>
 
-    <!-- Webhook Status Card -->
-    <div id="webhook-banner" class="webhook-banner">
-        <div class="wh-details">
-            <div class="wh-title" id="wh-title">
-                <span>🔄 Checking Telegram Webhook Status...</span>
-            </div>
-            <div class="wh-desc" id="wh-desc">Connecting to Telegram Bot API...</div>
-        </div>
-        <div class="wh-action" id="wh-action"></div>
+    <!-- Navigation Tabs -->
+    <div class="nav-tabs">
+        <button class="nav-tab active" id="tab-btn-logs" onclick="switchTab('logs')">
+            📋 Activity Logs & Requests
+        </button>
+        <button class="nav-tab" id="tab-btn-broadcast" onclick="switchTab('broadcast')">
+            📢 Broadcast Message <span class="badge badge-info" id="badge-user-count" style="margin-left: 6px; font-size: 0.72rem;">0 Users</span>
+        </button>
     </div>
 
-    <!-- Stats Cards -->
-    <div class="stats-grid">
-        <div class="stat-card blue">
-            <div class="stat-label">Total Requests</div>
-            <div class="stat-value" id="stat-total">0</div>
-            <div class="stat-desc">Captured events & hits</div>
+    <!-- Logs View Container -->
+    <div id="view-logs">
+        <!-- Webhook Status Card -->
+        <div id="webhook-banner" class="webhook-banner">
+            <div class="wh-details">
+                <div class="wh-title" id="wh-title">
+                    <span>🔄 Checking Telegram Webhook Status...</span>
+                </div>
+                <div class="wh-desc" id="wh-desc">Connecting to Telegram Bot API...</div>
+            </div>
+            <div class="wh-action" id="wh-action"></div>
         </div>
-        <div class="stat-card red">
-            <div class="stat-label">Errors Encountered</div>
-            <div class="stat-value" id="stat-errors">0</div>
-            <div class="stat-desc">Exceptions & 403 blocks</div>
+
+        <!-- Stats Cards -->
+        <div class="stats-grid">
+            <div class="stat-card blue">
+                <div class="stat-label">Total Requests</div>
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-desc">Captured events & hits</div>
+            </div>
+            <div class="stat-card red">
+                <div class="stat-label">Errors Encountered</div>
+                <div class="stat-value" id="stat-errors">0</div>
+                <div class="stat-desc">Exceptions & 403 blocks</div>
+            </div>
+            <div class="stat-card amber">
+                <div class="stat-label">Warnings</div>
+                <div class="stat-value" id="stat-warnings">0</div>
+                <div class="stat-desc">Bad requests / missing data</div>
+            </div>
+            <div class="stat-card purple">
+                <div class="stat-label">Unique Client IPs</div>
+                <div class="stat-value" id="stat-ips">0</div>
+                <div class="stat-desc">Unique visitors & Telegram IPs</div>
+            </div>
+            <div class="stat-card green">
+                <div class="stat-label">Last Activity</div>
+                <div class="stat-value" style="font-size: 1.15rem; margin-top: 14px;" id="stat-latest">None</div>
+                <div class="stat-desc" id="stat-filesize">Log size: 0 KB</div>
+            </div>
         </div>
-        <div class="stat-card amber">
-            <div class="stat-label">Warnings</div>
-            <div class="stat-value" id="stat-warnings">0</div>
-            <div class="stat-desc">Bad requests / missing data</div>
-        </div>
-        <div class="stat-card purple">
-            <div class="stat-label">Unique Client IPs</div>
-            <div class="stat-value" id="stat-ips">0</div>
-            <div class="stat-desc">Unique visitors & Telegram IPs</div>
-        </div>
-        <div class="stat-card green">
-            <div class="stat-label">Last Activity</div>
-            <div class="stat-value" style="font-size: 1.15rem; margin-top: 14px;" id="stat-latest">None</div>
-            <div class="stat-desc" id="stat-filesize">Log size: 0 KB</div>
+
+        <!-- Main Table Card -->
+        <div class="main-card">
+            <div class="controls-bar">
+                <div class="search-box">
+                    <input type="text" id="search-input" placeholder="Search by IP, username, message or User-Agent..." oninput="debounceFetch()">
+                </div>
+                <div class="filter-group">
+                    <select id="level-filter" onchange="fetchLogs()">
+                        <option value="">All Levels</option>
+                        <option value="ERROR">Errors Only (🔴)</option>
+                        <option value="WARNING">Warnings (🟡)</option>
+                        <option value="SUCCESS">Success (🟢)</option>
+                        <option value="INFO">Info (🔵)</option>
+                    </select>
+                    <select id="limit-filter" onchange="fetchLogs()">
+                        <option value="50">50 entries</option>
+                        <option value="150" selected>150 entries</option>
+                        <option value="300">300 entries</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Level</th>
+                            <th>Type</th>
+                            <th>Client IP</th>
+                            <th>User-Agent</th>
+                            <th>Method</th>
+                            <th>Summary Message</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logs-tbody">
+                        <tr>
+                            <td colspan="8" class="empty-state">
+                                <div class="empty-icon">⏳</div>
+                                <div>Loading log activity...</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
-    <!-- Main Table Card -->
-    <div class="main-card">
-        <div class="controls-bar">
-            <div class="search-box">
-                <input type="text" id="search-input" placeholder="Search by IP, username, message or User-Agent..." oninput="debounceFetch()">
+    <!-- Broadcast View Container -->
+    <div id="view-broadcast" style="display: none;">
+        <!-- Audience Stats Cards -->
+        <div class="stats-grid">
+            <div class="stat-card blue">
+                <div class="stat-label">Total Users</div>
+                <div class="stat-value" id="bcast-stat-total">0</div>
+                <div class="stat-desc">All registered bot users in SQLite</div>
             </div>
-            <div class="filter-group">
-                <select id="level-filter" onchange="fetchLogs()">
-                    <option value="">All Levels</option>
-                    <option value="ERROR">Errors Only (🔴)</option>
-                    <option value="WARNING">Warnings (🟡)</option>
-                    <option value="SUCCESS">Success (🟢)</option>
-                    <option value="INFO">Info (🔵)</option>
-                </select>
-                <select id="limit-filter" onchange="fetchLogs()">
-                    <option value="50">50 entries</option>
-                    <option value="150" selected>150 entries</option>
-                    <option value="300">300 entries</option>
-                </select>
+            <div class="stat-card amber">
+                <div class="stat-label">⭐ Premium Users</div>
+                <div class="stat-value" id="bcast-stat-premium">0</div>
+                <div class="stat-desc">Active ad-free subscribers</div>
+            </div>
+            <div class="stat-card green">
+                <div class="stat-label">Free Tier Users</div>
+                <div class="stat-value" id="bcast-stat-free">0</div>
+                <div class="stat-desc">Ad-supported standard users</div>
+            </div>
+            <div class="stat-card purple">
+                <div class="stat-label">Referral Network</div>
+                <div class="stat-value" id="bcast-stat-referrals">0</div>
+                <div class="stat-desc">Total user referrals rewarded</div>
             </div>
         </div>
 
-        <div class="table-responsive">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Level</th>
-                        <th>Type</th>
-                        <th>Client IP</th>
-                        <th>User-Agent</th>
-                        <th>Method</th>
-                        <th>Summary Message</th>
-                        <th>Details</th>
-                    </tr>
-                </thead>
-                <tbody id="logs-tbody">
-                    <tr>
-                        <td colspan="8" class="empty-state">
-                            <div class="empty-icon">⏳</div>
-                            <div>Loading log activity...</div>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+        <!-- Composer & Telegram Live Preview -->
+        <div class="broadcast-layout">
+            <!-- Composer Card -->
+            <div class="form-card">
+                <div class="form-card-title">
+                    <span>✍️ Compose Broadcast Message</span>
+                    <span class="badge badge-info" id="bcast-target-badge">Audience: All Users</span>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="bcast-target">Target Audience</label>
+                        <select id="bcast-target" class="form-control" onchange="onTargetGroupChange()">
+                            <option value="all">👥 All Registered Users</option>
+                            <option value="free">👤 Free Tier Users Only</option>
+                            <option value="premium">⭐ Premium Subscribers Only</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="bcast-parse-mode">Parse Mode</label>
+                        <select id="bcast-parse-mode" class="form-control" onchange="updateBroadcastPreview()">
+                            <option value="HTML" selected>HTML (Recommended: &lt;b&gt;, &lt;i&gt;, &lt;code&gt;)</option>
+                            <option value="Markdown">Markdown (*bold*, _italic_, `code`)</option>
+                            <option value="None">Plain Text (No markup)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Formatting Helpers Toolbar -->
+                <div class="form-group" style="margin-bottom: 6px;">
+                    <label class="form-label" style="display: flex; justify-content: space-between;">
+                        <span>Message Text</span>
+                        <span id="char-counter" class="char-counter">0 / 4096</span>
+                    </label>
+                    <div class="format-toolbar" id="toolbar-html">
+                        <button type="button" class="tool-btn" onclick="insertTag('<b>','</b>')"><b>B</b></button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<i>','</i>')"><i>I</i></button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<u>','</u>')"><u>U</u></button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<s>','</s>')"><s>S</s></button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<code>','</code>')">&lt;code&gt;</button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<pre>','</pre>')">&lt;pre&gt;</button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<a href=\x22https://\x22>','</a>')">🔗 Link</button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<tg-spoiler>','</tg-spoiler>')">🙈 Spoiler</button>
+                        <button type="button" class="tool-btn" onclick="insertTag('<blockquote>','</blockquote>')">💬 Quote</button>
+                    </div>
+                    <textarea id="bcast-message" class="form-control" placeholder="Type your broadcast announcement here... Use formatting tags or tools above." oninput="updateBroadcastPreview()"></textarea>
+                </div>
+
+                <!-- Interactive Inline Button -->
+                <div class="form-group" style="margin-top: 14px;">
+                    <label class="form-label">Attached Inline Button (Optional)</label>
+                    <div class="form-row">
+                        <input type="text" id="bcast-btn-text" class="form-control" placeholder="Button Title (e.g. Try New Feature)" oninput="updateBroadcastPreview()">
+                        <input type="url" id="bcast-btn-url" class="form-control" placeholder="Button URL (e.g. https://t.me/...)" oninput="updateBroadcastPreview()">
+                    </div>
+                </div>
+
+                <!-- Options -->
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="bcast-disable-preview" checked onchange="updateBroadcastPreview()">
+                        Disable Link Previews in Telegram (cleaner layout)
+                    </label>
+                </div>
+
+                <!-- Test Message Sender -->
+                <div class="test-box">
+                    <div style="font-size: 0.84rem; font-weight: 600; margin-bottom: 8px; color: #cbd5e1; display: flex; align-items: center; gap: 6px;">
+                        <span>🧪 Safe Test: Verify On Your Telegram Account First</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <input type="text" id="bcast-test-chat-id" class="form-control" style="flex: 1; min-width: 180px;" placeholder="Admin Chat ID (e.g. 123456789)">
+                        <button type="button" class="btn" style="background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.4); color: #93c5fd;" onclick="sendTestBroadcast()">
+                            Send Test
+                        </button>
+                    </div>
+                    <div id="test-result-msg" style="font-size: 0.78rem; margin-top: 6px; display: none;"></div>
+                </div>
+
+                <!-- Action Button -->
+                <div style="margin-top: 1rem;">
+                    <button type="button" id="btn-broadcast-submit" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 12px 18px; font-size: 0.95rem; font-weight: 700; background: linear-gradient(135deg, #3b82f6, #8b5cf6); border: none; box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);" onclick="confirmAndSendBroadcast()">
+                        🚀 Broadcast Message to All Users
+                    </button>
+                </div>
+            </div>
+
+            <!-- Live Telegram Chat Preview -->
+            <div class="form-card" style="padding: 0; display: flex; flex-direction: column;">
+                <div class="telegram-preview-box">
+                    <div class="telegram-preview-header">
+                        <div class="telegram-avatar">🤖</div>
+                        <div class="telegram-bot-info">
+                            <h4>
+                                <span id="preview-bot-name">Video Downloader Bot</span>
+                                <span class="telegram-bot-badge">bot</span>
+                            </h4>
+                            <p id="preview-bot-status">live message preview</p>
+                        </div>
+                    </div>
+                    <div class="telegram-preview-body">
+                        <div class="telegram-msg-bubble">
+                            <div id="preview-msg-content" style="white-space: pre-wrap;">
+                                <i>Your message preview will appear here in real time as you type...</i>
+                            </div>
+                            <div class="telegram-msg-time">
+                                <span id="preview-msg-time">12:00</span>
+                                <span>✓✓</span>
+                            </div>
+                        </div>
+                        <a id="preview-inline-btn" class="telegram-action-btn-preview" href="javascript:void(0)" style="display: none;">
+                            <span id="preview-btn-text">Button Text</span> ↗
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Broadcast History Card -->
+        <div class="main-card" style="margin-top: 1.5rem;">
+            <div style="padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="font-size: 1rem; font-weight: 700;">📜 Recent Broadcast Campaigns</h3>
+                <button class="btn" style="padding: 5px 10px; font-size: 0.78rem;" onclick="loadBroadcastStats()">🔄 Refresh History</button>
+            </div>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date & Time</th>
+                            <th>Target Group</th>
+                            <th>Format</th>
+                            <th>Total</th>
+                            <th>Delivered</th>
+                            <th>Failed</th>
+                            <th>Button</th>
+                            <th>Message Preview</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-broadcasts-tbody">
+                        <tr>
+                            <td colspan="8" class="empty-state">
+                                <div class="empty-icon">📢</div>
+                                <div>Loading campaign history...</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Broadcast Sending Progress Modal -->
+    <div id="broadcast-modal" class="modal-overlay">
+        <div class="modal-card" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3 id="bcast-modal-title">🚀 Broadcasting Message</h3>
+            </div>
+            <div class="modal-body" style="text-align: center; padding: 2rem 1.5rem;">
+                <div id="bcast-spinner" style="font-size: 2.5rem; margin-bottom: 1rem; animation: pulse 1.5s infinite;">📡</div>
+                <h4 id="bcast-modal-status" style="font-size: 1.1rem; margin-bottom: 6px;">Broadcasting in progress...</h4>
+                <p id="bcast-modal-desc" style="color: var(--text-muted); font-size: 0.86rem; margin-bottom: 1rem;">
+                    Please do not close or navigate away from this window until the broadcast completes.
+                </p>
+
+                <div class="progress-bar-bg">
+                    <div id="bcast-progress-fill" class="progress-bar-fill"></div>
+                </div>
+
+                <div style="display: flex; justify-content: space-around; margin-top: 1.25rem; font-family: var(--font-mono); font-size: 0.9rem;">
+                    <div>Recipients: <b id="bcast-stat-recipients">0</b></div>
+                    <div style="color: #34d399;">Delivered: <b id="bcast-stat-sent">0</b></div>
+                    <div style="color: #f87171;">Failed: <b id="bcast-stat-failed">0</b></div>
+                </div>
+
+                <div id="bcast-modal-actions" style="margin-top: 1.5rem; display: none;">
+                    <button class="btn btn-primary" onclick="closeBroadcastModal()">Done / Close</button>
+                </div>
+            </div>
         </div>
     </div>
 
