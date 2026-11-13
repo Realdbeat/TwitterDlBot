@@ -12,6 +12,7 @@ $config = require __DIR__ . '/config.php';
 use TwitterDlBot\TelegramBot;
 use TwitterDlBot\TwitterDownloader;
 use TwitterDlBot\TikTokDownloader;
+use TwitterDlBot\FacebookDownloader;
 use TwitterDlBot\Database;
 use TwitterDlBot\BotHandler;
 use TwitterDlBot\Logger;
@@ -43,7 +44,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     sendResponse(200, [
         'ok' => true,
-        'service' => 'Twitter & TikTok Video Downloader Telegram Bot',
+        'service' => 'Twitter, TikTok & Facebook Video Downloader Telegram Bot',
         'status' => 'Webhook endpoint is active and waiting for Telegram updates.',
         'bot_token_configured' => $hasToken,
         'client_ip' => Logger::getClientIp(),
@@ -102,7 +103,8 @@ try {
     $bot = new TelegramBot($config['bot_token'], $config['http_timeout']);
     $downloader = new TwitterDownloader($config['http_timeout']);
     $tiktokDownloader = new TikTokDownloader($config['http_timeout']);
-    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader, $db);
+    $facebookDownloader = new FacebookDownloader($config['http_timeout']);
+    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader, $db, $facebookDownloader);
 
     $handler->handleUpdate($update);
 

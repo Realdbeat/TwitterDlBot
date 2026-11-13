@@ -10,6 +10,7 @@ class BotHandler {
     private TelegramBot $bot;
     private TwitterDownloader $downloader;
     private TikTokDownloader $tiktokDownloader;
+    private FacebookDownloader $facebookDownloader;
     private Database $db;
     private array $config;
 
@@ -18,12 +19,14 @@ class BotHandler {
         TwitterDownloader $downloader,
         array $config,
         ?TikTokDownloader $tiktokDownloader = null,
-        ?Database $db = null
+        ?Database $db = null,
+        ?FacebookDownloader $facebookDownloader = null
     ) {
         $this->bot = $bot;
         $this->downloader = $downloader;
         $this->config = $config;
         $this->tiktokDownloader = $tiktokDownloader ?? new TikTokDownloader($config['http_timeout'] ?? 30);
+        $this->facebookDownloader = $facebookDownloader ?? new FacebookDownloader($config['http_timeout'] ?? 30);
         $this->db = $db ?? new Database($config['temp_dir'] ?? sys_get_temp_dir());
     }
 
@@ -146,20 +149,24 @@ class BotHandler {
             return;
         }
 
-        // 2. Extract single tweet and tiktok media links from text
+        // 2. Extract single tweet, tiktok, and facebook media links from text
         $tweetLinks = $this->downloader->extractTweetLinks($text);
         $tiktokLinks = $this->tiktokDownloader->extractTikTokLinks($text);
+        $facebookLinks = $this->facebookDownloader->extractFacebookLinks($text);
 
-        if (empty($tweetLinks) && empty($tiktokLinks)) {
+        if (empty($tweetLinks) && empty($tiktokLinks) && empty($facebookLinks)) {
             if ($isPrivate) {
                 $this->bot->sendMessage(
                     $chatId,
-                    "👋 Please send a valid <b>Twitter / X</b> or <b>TikTok</b> link.\n\n" .
+                    "👋 Please send a valid <b>Twitter / X</b>, <b>TikTok</b>, or <b>Facebook</b> link.\n\n" .
                     "<b>Examples:</b>\n" .
                     "• <code>https://x.com/username/status/1234567890</code>\n" .
                     "• <code>https://www.tiktok.com/@username/video/1234567890</code>\n" .
                     "• <code>https://www.tiktok.com/@username</code> (Download creator's videos)\n" .
-                    "• <code>https://vm.tiktok.com/ZMxxxxxx/</code>\n\n" .
+                    "• <code>https://vm.tiktok.com/ZMxxxxxx/</code>\n" .
+                    "• <code>https://www.facebook.com/watch/?v=1234567890</code>\n" .
+                    "• <code>https://www.facebook.com/reel/1234567890</code>\n" .
+                    "• <code>https://fb.watch/xxxxxx/</code>\n\n" .
                     "Type /help for instructions, /premium for ad-free plans, or /ref to earn free days!",
                     [
                         'reply_to_message_id' => $message['message_id'] ?? null
@@ -194,6 +201,19 @@ class BotHandler {
                     $this->queueTikTokForAd($chatId, $userId, $item, $message['message_id'] ?? null);
                 } else {
                     $this->processTikTokLink($chatId, $item, $message['message_id'] ?? null);
+                }
+            }
+        }
+
+        if (!empty($facebookLinks)) {
+            $facebookLinks = array_slice($facebookLinks, 0, 3);
+            foreach ($facebookLinks as $item) {
+                if ($isPremium) {
+                    $this->processFacebookLink($chatId, $item, $message['message_id'] ?? null);
+                } elseif ($this->isAdEnabled()) {
+                    $this->queueFacebookForAd($chatId, $userId, $item, $message['message_id'] ?? null);
+                } else {
+                    $this->processFacebookLink($chatId, $item, $message['message_id'] ?? null);
                 }
             }
         }
@@ -572,6 +592,147 @@ class BotHandler {
     }
 
     /**
+     * Process a single Facebook video or reel link.
+     */
+    public function processFacebookLink(int|string $chatId, array $item, ?int $replyToId): void {
+        $statusMsg = $this->bot->sendMessage(
+            $chatId,
+            "🔍 <i>Searching for Facebook video...</i>",
+            ['reply_to_message_id' => $replyToId]
+        );
+        $statusMsgId = $statusMsg['result']['message_id'] ?? null;
+
+        $this->bot->sendChatAction($chatId, 'upload_video');
+
+        $fbInfo = $this->facebookDownloader->getVideoInfo($item['url'], $item['id'], $item['user']);
+
+        if ($fbInfo === null) {
+            $errorText = "❌ <b>Could not fetch Facebook video!</b>\n\n" .
+                "Possible reasons:\n" .
+                "• The post or video is from a private group or account\n" .
+                "• The video was deleted or region/age-restricted\n" .
+                "• Facebook temporarily blocked or rate-limited the request\n\n" .
+                "Please verify the link and try again in a moment.";
+
+            if ($statusMsgId) {
+                $this->bot->editMessageText($chatId, $statusMsgId, $errorText);
+            } else {
+                $this->bot->sendMessage($chatId, $errorText, ['reply_to_message_id' => $replyToId]);
+            }
+            return;
+        }
+
+        // Check if there are videos
+        if (empty($fbInfo['videos'])) {
+            $noVideoText = "ℹ️ <b>No video found!</b>\n\nThis Facebook post does not contain any video or reel media.";
+            if ($statusMsgId) {
+                $this->bot->editMessageText($chatId, $statusMsgId, $noVideoText);
+            } else {
+                $this->bot->sendMessage($chatId, $noVideoText, ['reply_to_message_id' => $replyToId]);
+            }
+            return;
+        }
+
+        // We have videos! Update status
+        if ($statusMsgId) {
+            $this->bot->editMessageText($chatId, $statusMsgId, "📥 <i>Facebook video found! Sending to Telegram...</i>");
+        }
+
+        // Format caption
+        $author = htmlspecialchars($fbInfo['author_name'], ENT_QUOTES, 'UTF-8');
+        $handle = htmlspecialchars($fbInfo['author_handle'], ENT_QUOTES, 'UTF-8');
+        $textExcerpt = '';
+        if (!empty($fbInfo['text'])) {
+            $cleanText = htmlspecialchars(trim($fbInfo['text']), ENT_QUOTES, 'UTF-8');
+            if (mb_strlen($cleanText) > 250) {
+                $cleanText = mb_substr($cleanText, 0, 247) . '...';
+            }
+            $textExcerpt = "\n\n<i>\"{$cleanText}\"</i>";
+        }
+
+        $caption = "🎬 <b><a href=\"{$fbInfo['url']}\">{$author}</a></b> (@{$handle}){$textExcerpt}\n\n" .
+                   "🔗 <a href=\"{$fbInfo['url']}\">View on Facebook</a>";
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [
+                    ['text' => '🌐 Open on Facebook', 'url' => $fbInfo['url']]
+                ]
+            ]
+        ];
+
+        // Pick best video (HD preferred)
+        $video = $fbInfo['videos'][0];
+        $videoUrl = $video['url'];
+
+        $this->bot->sendChatAction($chatId, 'upload_video');
+
+        $videoOptions = [
+            'caption' => $caption,
+            'reply_markup' => $keyboard,
+            'reply_to_message_id' => $replyToId,
+            'duration' => !empty($video['duration']) ? (int)$video['duration'] : null,
+            'width' => !empty($video['width']) ? (int)$video['width'] : null,
+            'height' => !empty($video['height']) ? (int)$video['height'] : null
+        ];
+
+        $sendSuccess = false;
+
+        // 1. First attempt: Send by URL directly to Telegram
+        $result = $this->bot->sendVideo($chatId, $videoUrl, $videoOptions);
+
+        if ($result['ok'] ?? false) {
+            $sendSuccess = true;
+        } else {
+            // 2. Second attempt: Download locally to temp and upload via CURLFile
+            if ($statusMsgId) {
+                $this->bot->editMessageText($chatId, $statusMsgId, "⏳ <i>Downloading media to server for direct upload...</i>");
+            }
+
+            $tempFile = $this->facebookDownloader->downloadVideoToTemp(
+                $videoUrl,
+                $this->config['temp_dir'],
+                $this->config['max_file_size_mb']
+            );
+
+            if ($tempFile && file_exists($tempFile)) {
+                $this->bot->sendChatAction($chatId, 'upload_video');
+                $curlFile = new CURLFile($tempFile, 'video/mp4', 'facebook_video.mp4');
+                $uploadResult = $this->bot->sendVideo($chatId, $curlFile, $videoOptions);
+
+                // If sendVideo fails, try sendDocument fallback
+                if (!($uploadResult['ok'] ?? false)) {
+                    $uploadResult = $this->bot->sendDocument($chatId, $curlFile, $videoOptions);
+                }
+
+                @unlink($tempFile);
+
+                if ($uploadResult['ok'] ?? false) {
+                    $sendSuccess = true;
+                }
+            }
+
+            // 3. Fallback direct download link if upload failed or file exceeds 50MB
+            if (!$sendSuccess) {
+                $fallbackText = "⚠️ <b>Could not upload video directly!</b>\n\n" .
+                    "The video may exceed Telegram's 50MB bot upload limit or Telegram rejected the file.\n\n" .
+                    "👉 <a href=\"{$videoUrl}\"><b>Click here to download/view the Facebook video directly</b></a>";
+
+                $this->bot->sendMessage($chatId, $fallbackText, [
+                    'reply_to_message_id' => $replyToId,
+                    'reply_markup' => $keyboard
+                ]);
+                $sendSuccess = true;
+            }
+        }
+
+        // Clean up status message
+        if ($statusMsgId && $sendSuccess) {
+            $this->bot->deleteMessage($chatId, $statusMsgId);
+        }
+    }
+
+    /**
      * Send /start welcome message.
      */
     private function sendStartMessage(int|string $chatId, string $name, bool $wasReferred = false): void {
@@ -580,14 +741,15 @@ class BotHandler {
             : "";
 
         $text = "{$prefix}👋 <b>Hello, " . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . "!</b>\n\n" .
-            "I am your <b>Twitter (X) & TikTok Video Downloader Bot</b>.\n\n" .
+            "I am your <b>Twitter (X), TikTok & Facebook Video Downloader Bot</b>.\n\n" .
             "🚀 <b>Features:</b>\n" .
-            "• 🎬 Watermark-free HD video downloads\n" .
+            "• 🎬 Watermark-free HD Twitter & TikTok video downloads\n" .
+            "• 📹 Facebook Reels, Watch & Video clips in HD/SD\n" .
             "• 🎵 Instant MP3 audio extraction\n" .
             "• 📥 TikTok creator profile bulk downloading\n" .
             "• ⭐ <b>Ad-Free Downloads</b> via Telegram Stars (/premium)\n" .
             "• 🎁 <b>Free Premium Days:</b> Earn 1 day of ad-free downloads per friend invited (/ref)!\n\n" .
-            "💡 <i>Send any Twitter or TikTok link now to download!</i>";
+            "💡 <i>Send any Twitter, TikTok, or Facebook link now to download!</i>";
 
         $keyboard = [
             'inline_keyboard' => [
@@ -621,6 +783,11 @@ class BotHandler {
             "• <code>https://vm.tiktok.com/xxxxxx/</code> or <code>vt.tiktok.com/xxxxxx/</code>\n" .
             "• <code>https://www.tiktok.com/@username/photo/1234567890</code> (photo slideshows)\n" .
             "• <code>https://www.tiktok.com/@username</code> (Creator profile: download all videos)\n\n" .
+            "<b>Facebook:</b>\n" .
+            "• <code>https://www.facebook.com/watch/?v=1234567890</code>\n" .
+            "• <code>https://www.facebook.com/reel/1234567890</code>\n" .
+            "• <code>https://fb.watch/xxxxxx/</code>\n" .
+            "• <code>https://www.facebook.com/share/r/xxxxxx/</code>\n\n" .
             "<b>⭐ Subscriptions & Referrals:</b>\n" .
             "• <b>/premium</b>: Upgrade with Telegram Stars for ad-free downloads\n" .
             "  - 7 Days: ⭐ 100 Stars\n" .
@@ -646,14 +813,14 @@ class BotHandler {
      * Send /about information.
      */
     private function sendAboutMessage(int|string $chatId): void {
-        $text = "🤖 <b>Twitter & TikTok Video Downloader Bot</b>\n\n" .
+        $text = "🤖 <b>Twitter, TikTok & Facebook Video Downloader Bot</b>\n\n" .
             "• <b>Language:</b> PHP 8.x\n" .
             "• <b>Platform:</b> Telegram Bot API\n" .
-            "• <b>Features:</b> Twitter / X & TikTok (Watermark-Free HD + MP3)\n" .
+            "• <b>Features:</b> Twitter / X, TikTok (Watermark-Free HD + MP3) & Facebook (HD / Reels / Watch)\n" .
             "• <b>Profile Downloader:</b> Bulk download 10 videos at a time from creator pages\n" .
             "• <b>Storage:</b> SQLite Session & Queue Management\n" .
             "• <b>Source:</b> Open Source\n\n" .
-            "Built to download public Twitter/X and TikTok media clips fast and effortlessly.";
+            "Built to download public Twitter/X, TikTok, and Facebook media clips fast and effortlessly.";
 
         $this->bot->sendMessage($chatId, $text);
     }
@@ -1347,6 +1514,54 @@ class BotHandler {
     }
 
     /**
+     * Queues a Facebook link to require watching a Monetag ad in TMA before delivering the video.
+     */
+    private function queueFacebookForAd(int|string $chatId, int|string $userId, array $item, ?int $replyToId): void {
+        $token = bin2hex(random_bytes(16));
+        $this->db->createPendingAdDownload($token, $chatId, $userId, 'facebook', $item, $replyToId);
+
+        $baseUrl = $this->getMiniAppBaseUrl();
+        $adUrl = $baseUrl . '/ad.php?token=' . $token;
+
+        $authorExcerpt = !empty($item['user']) && $item['user'] !== 'Facebook' ? " from {$item['user']}" : "";
+        $text = "🎬 <b>Facebook Video Ready!</b>{$authorExcerpt}\n\n" .
+                "To support our free bot and unlock your video, please watch a quick sponsored ad.\n\n" .
+                "💡 <i>Don't want ads? Upgrade to ⭐ Premium (/premium) or invite friends for free days (/ref)!</i>\n\n" .
+                "👇 <b>Tap the button below to watch the ad & get your video:</b>";
+
+        $isHttps = str_starts_with($baseUrl, 'https://');
+        $watchButton = [
+            'text' => '🎁 Watch Ad to Unlock Video 🎬',
+        ];
+        if ($isHttps) {
+            $watchButton['web_app'] = ['url' => $adUrl];
+        } else {
+            $watchButton['url'] = $adUrl;
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [$watchButton],
+                [
+                    ['text' => '⭐ Skip Ads with Premium', 'callback_data' => 'show_plans']
+                ],
+                [
+                    ['text' => '🌐 Open on Facebook', 'url' => $item['url']]
+                ]
+            ]
+        ];
+
+        $res = $this->bot->sendMessage($chatId, $text, [
+            'reply_to_message_id' => $replyToId,
+            'reply_markup' => $keyboard
+        ]);
+
+        if (!empty($res['result']['message_id'])) {
+            $this->db->updatePendingAdStatusMessage($token, (int)$res['result']['message_id']);
+        }
+    }
+
+    /**
      * Completes ad verification and delivers the requested video to the user's Telegram chat.
      */
     public function deliverPendingAdDownload(string $token): array {
@@ -1382,6 +1597,8 @@ class BotHandler {
                 $this->processTweetLink($chatId, $linkData, $replyToId);
             } elseif ($linkType === 'tiktok') {
                 $this->processTikTokLink($chatId, $linkData, $replyToId);
+            } elseif ($linkType === 'facebook') {
+                $this->processFacebookLink($chatId, $linkData, $replyToId);
             } else {
                 $this->db->updatePendingAdStatus($token, 'failed');
                 return ['ok' => false, 'error' => 'Unsupported link type'];

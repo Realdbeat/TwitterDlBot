@@ -1,12 +1,16 @@
-# 📥 Twitter (X) & TikTok Video Downloader Telegram Bot (PHP)
+# 📥 Twitter (X), TikTok & Facebook Video Downloader Telegram Bot (PHP)
 
-A fast, lightweight, and zero-external-dependency Telegram bot built in pure **PHP 8** that allows users to send any Twitter / X or TikTok video link and receive the playable, watermark-free video directly in chat.
+A fast, lightweight, and zero-external-dependency Telegram bot built in pure **PHP 8** that allows users to send any Twitter / X, TikTok, or Facebook video/reel link and receive the playable, watermark-free video directly in chat.
 
 ---
 
 ## ✨ Features
 
 - **Direct Video Delivery**: Sends the highest quality MP4 video available directly into the Telegram chat with native video player support.
+- **Facebook Video & Reel Downloader**:
+  - Full support for **Facebook Reels**, **Watch** videos, page posts, and mobile links (`fb.watch`, `facebook.com/reel/`, `facebook.com/watch/?v=`, `facebook.com/share/r/`, etc.).
+  - Extracts direct high-definition (HD) and standard-definition (SD) MP4 video streams.
+  - Multi-tier resolution strategy (Direct Desktop SSR Scrape, Mobile HTML Scrape, and SnapSave fallback engine) with automatic Unicode and JS-unpacking.
 - **Watermark-Free TikTok Downloads**: Automatically resolves HD and standard TikTok videos without watermarks, with one-tap background audio/MP3 extraction and photo slideshow support.
 - **TikTok Profile Bulk Downloader**:
   - Send any creator's profile page link: `https://www.tiktok.com/@username`
@@ -28,7 +32,14 @@ A fast, lightweight, and zero-external-dependency Telegram bot built in pure **P
     - `https://www.tiktok.com/@username/photo/1234567890` (Photo carousels)
     - `https://m.tiktok.com/v/1234567890.html`
     - Short links: `vm.tiktok.com/...`, `vt.tiktok.com/...`, `tiktok.com/t/...` (auto-expanded)
-- **Multi-Tier Video Extraction**: Uses redundant resolution engines (TikWM API, tnktok/fxTikTok, FxTwitter API, vxTwitter API, and direct CDN resolvers) for maximum uptime without needing API keys.
+  - **Facebook**:
+    - `https://www.facebook.com/watch/?v=1234567890`
+    - `https://www.facebook.com/reel/1234567890`
+    - `https://www.facebook.com/username/videos/1234567890/`
+    - `https://www.facebook.com/video.php?v=1234567890`
+    - Short / Share links: `https://fb.watch/xxxxxx/`, `https://www.facebook.com/share/r/xxxxxx/`, `https://www.facebook.com/share/v/xxxxxx/` (auto-expanded)
+    - Mobile / Web links: `m.facebook.com`, `mbasic.facebook.com`, `web.facebook.com`
+- **Multi-Tier Video Extraction**: Uses redundant resolution engines (Direct Facebook Scraper, SnapSave unpacker, TikWM API, tnktok/fxTikTok, FxTwitter API, vxTwitter API, and direct CDN resolvers) for maximum uptime without needing API keys.
 - **Smart Upload Strategy**:
   1. *Instant URL Transfer*: Tries sending via direct stream URL first (zero server bandwidth consumption).
   2. *Chunked Local Buffer*: Automatically buffers to local storage and uploads via `multipart/form-data` if Telegram fails to fetch the remote URL.
@@ -56,9 +67,10 @@ TwitterDlBot/
 ├── tmp/                  # Temporary buffer & SQLite database directory
 └── src/
     ├── TelegramBot.php       # Telegram Bot API client wrapper
-    ├── TwitterDownloader.php # Twitter link parser & video resolver
-    ├── TikTokDownloader.php  # TikTok watermark-free video & audio resolver
-    ├── Database.php          # SQLite PDO session & video queue manager
+    ├── TwitterDownloader.php  # Twitter link parser & video resolver
+    ├── TikTokDownloader.php   # TikTok watermark-free video & audio resolver
+    ├── FacebookDownloader.php # Facebook video & reel resolver & downloader
+    ├── Database.php           # SQLite PDO session & video queue manager
     ├── BotHandler.php        # Update router and message handler
     └── Logger.php            # Activity, IP, User-Agent & error logger
 ```

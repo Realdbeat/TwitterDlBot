@@ -17,6 +17,7 @@ $config = require __DIR__ . '/config.php';
 use TwitterDlBot\TelegramBot;
 use TwitterDlBot\TwitterDownloader;
 use TwitterDlBot\TikTokDownloader;
+use TwitterDlBot\FacebookDownloader;
 use TwitterDlBot\Database;
 use TwitterDlBot\BotHandler;
 
@@ -39,9 +40,9 @@ function logError(string $message): void {
     echo "[{$time}] [ERROR] {$message}\n";
 }
 
-echo "===============================================\n";
-echo " Twitter & TikTok Video Downloader Telegram Bot\n";
-echo "===============================================\n\n";
+echo "========================================================\n";
+echo " Twitter, TikTok & Facebook Video Downloader Telegram Bot\n";
+echo "========================================================\n\n";
 
 if (empty($config['bot_token']) || $config['bot_token'] === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
     logError("Telegram Bot Token is missing!");
@@ -71,7 +72,8 @@ try {
     $bot = new TelegramBot($config['bot_token'], $config['http_timeout']);
     $downloader = new TwitterDownloader($config['http_timeout']);
     $tiktokDownloader = new TikTokDownloader($config['http_timeout']);
-    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader, $db);
+    $facebookDownloader = new FacebookDownloader($config['http_timeout']);
+    $handler = new BotHandler($bot, $downloader, $config, $tiktokDownloader, $db, $facebookDownloader);
 
     // Verify token with getMe
     logInfo("Testing connection to Telegram Bot API...");
